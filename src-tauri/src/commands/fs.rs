@@ -485,7 +485,9 @@ pub fn read_local_file(path: String) -> Result<Vec<u8>, AppError> {
 }
 
 const MAX_LOCAL_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_LOCAL_IMAGE_PIXELS: u64 = 24_000_000;
+// Supports common 6K wallpapers such as 6400x4496 while bounding decoded
+// image memory before the renderer creates its separately capped canvas.
+const MAX_LOCAL_IMAGE_PIXELS: u64 = 32_000_000;
 
 fn local_image_format(extension: &str) -> Option<image::ImageFormat> {
     match extension {
@@ -1006,16 +1008,17 @@ mod tests {
     }
 
     #[test]
-    fn local_image_dimensions_reject_pixel_bombs() {
-        assert!(validate_local_image_dimensions(4_096, 4_096).is_ok());
+    fn local_image_dimensions_allow_common_wallpapers_and_reject_pixel_bombs() {
+        assert!(validate_local_image_dimensions(6_400, 4_496).is_ok());
+        assert!(validate_local_image_dimensions(8_000, 4_000).is_ok());
 
-        let Err(error) = validate_local_image_dimensions(8_192, 8_192) else {
+        let Err(error) = validate_local_image_dimensions(8_000, 4_001) else {
             panic!("oversized image dimensions must fail");
         };
 
         assert!(error
             .to_string()
-            .contains("dimensions exceed the 24 megapixel limit"));
+            .contains("dimensions exceed the 32 megapixel limit"));
     }
 
     #[test]
