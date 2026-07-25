@@ -838,7 +838,7 @@ pub fn run() {
             commands::check_path_exists,
             commands::check_path_is_dir,
             commands::read_local_file,
-            commands::read_local_image,
+            commands::prepare_local_background,
             commands::list_dir_files,
             commands::show_item_in_dir,
             commands::open_path_normalized,

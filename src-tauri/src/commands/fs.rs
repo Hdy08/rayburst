@@ -511,24 +511,21 @@ fn validate_local_image_dimensions(width: u32, height: u32) -> Result<(), AppErr
     Ok(())
 }
 
-/// Reads a local background image through Tauri's binary IPC response path.
-///
-/// The dedicated command avoids serializing every byte as a JSON number and
-/// caps the input before allocation so a malformed preference cannot exhaust
-/// renderer or backend memory during startup.
-#[tauri::command]
-pub fn read_local_image(path: String) -> Result<tauri::ipc::Response, AppError> {
+fn read_validated_local_image(path: &str) -> Result<(Vec<u8>, String), AppError> {
     use std::io::Read;
 
-    let path = std::path::Path::new(&path);
-    let image_format = path
+    let path = std::path::Path::new(path);
+    let extension = path
         .extension()
         .and_then(std::ffi::OsStr::to_str)
         .map(str::to_ascii_lowercase)
-        .and_then(|extension| local_image_format(&extension))
+        .ok_or_else(|| AppError::Io("Unsupported background image format".into()))?;
+    let image_format = local_image_format(&extension)
         .ok_or_else(|| AppError::Io("Unsupported background image format".into()))?;
 
-    let mut file = std::fs::File::open(path)
+    let canonical_path = dunce::canonicalize(path)
+        .map_err(|e| AppError::Io(format!("Failed to resolve background image: {e}")))?;
+    let mut file = std::fs::File::open(&canonical_path)
         .map_err(|e| AppError::Io(format!("Failed to open background image: {e}")))?;
     let metadata = file
         .metadata()
@@ -543,19 +540,6 @@ pub fn read_local_image(path: String) -> Result<tauri::ipc::Response, AppError> 
         )));
     }
 
-    let dimension_file = file
-        .try_clone()
-        .map_err(|e| AppError::Io(format!("Failed to inspect background image: {e}")))?;
-    let (width, height) =
-        image::ImageReader::with_format(std::io::BufReader::new(dimension_file), image_format)
-            .into_dimensions()
-            .map_err(|e| {
-                AppError::Io(format!(
-                    "Failed to inspect background image dimensions: {e}"
-                ))
-            })?;
-    validate_local_image_dimensions(width, height)?;
-
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.by_ref()
         .take(MAX_LOCAL_IMAGE_BYTES + 1)
@@ -568,7 +552,103 @@ pub fn read_local_image(path: String) -> Result<tauri::ipc::Response, AppError> 
         )));
     }
 
-    Ok(tauri::ipc::Response::new(bytes))
+    let (width, height) =
+        image::ImageReader::with_format(std::io::Cursor::new(&bytes), image_format)
+            .into_dimensions()
+            .map_err(|e| {
+                AppError::Io(format!(
+                    "Failed to inspect background image dimensions: {e}"
+                ))
+            })?;
+    validate_local_image_dimensions(width, height)?;
+
+    Ok((bytes, extension))
+}
+
+const LOCAL_IMAGE_CACHE_DIRECTORY: &str = "motrix-background";
+// Serializes cache replacement so an older IPC request cannot remove the cache
+// file returned to a newer request that completed first.
+static LOCAL_IMAGE_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn remove_stale_local_image_cache_entries(cache_dir: &Path, current_path: &Path) {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current_path {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_file() {
+            if let Err(error) = std::fs::remove_file(path) {
+                log::debug!("Failed to remove stale cached background image: {error}");
+            }
+        }
+    }
+}
+
+fn cache_local_image(
+    cache_dir: &Path,
+    bytes: &[u8],
+    extension: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    use std::io::Write;
+
+    std::fs::create_dir_all(cache_dir)
+        .map_err(|e| AppError::Io(format!("Failed to create background cache directory: {e}")))?;
+
+    let suffix = format!(".{extension}");
+    let mut cache_file = tempfile::Builder::new()
+        .prefix("background-")
+        .suffix(&suffix)
+        .tempfile_in(cache_dir)
+        .map_err(|e| AppError::Io(format!("Failed to create cached background image: {e}")))?;
+    cache_file
+        .write_all(bytes)
+        .map_err(|e| AppError::Io(format!("Failed to cache background image: {e}")))?;
+    cache_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| AppError::Io(format!("Failed to finalize cached background image: {e}")))?;
+    let (_, cache_path) = cache_file.keep().map_err(|e| {
+        AppError::Io(format!(
+            "Failed to finalize cached background image: {}",
+            e.error
+        ))
+    })?;
+
+    remove_stale_local_image_cache_entries(cache_dir, &cache_path);
+    Ok(cache_path)
+}
+
+/// Validates a user-selected image and copies it into the application's scoped
+/// asset cache. The frontend receives only that cache path, never the original
+/// user-selected path, so the WebView cannot access arbitrary local files.
+#[tauri::command]
+pub fn prepare_local_background(app: AppHandle, path: String) -> Result<String, AppError> {
+    let _cache_lock = match LOCAL_IMAGE_CACHE_LOCK.lock() {
+        Ok(lock) => lock,
+        Err(poisoned) => {
+            log::warn!("Recovering poisoned background image cache lock");
+            poisoned.into_inner()
+        }
+    };
+    let (bytes, extension) = read_validated_local_image(&path)?;
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| AppError::Io(format!("Failed to resolve background cache directory: {e}")))?
+        .join(LOCAL_IMAGE_CACHE_DIRECTORY);
+    let cache_path = cache_local_image(&cache_dir, &bytes, &extension)?;
+
+    cache_path
+        .into_os_string()
+        .into_string()
+        .map_err(|_| AppError::Io("Cached background image path is not valid UTF-8".into()))
 }
 
 /// Lists regular file names in a directory.
@@ -975,30 +1055,32 @@ mod tests {
         assert!(!check_path_is_dir(String::new()));
     }
 
-    // ── read_local_image ─────────────────────────────────────────────
+    // ── prepare_local_background ─────────────────────────────────────
 
     #[test]
-    fn read_local_image_accepts_supported_files_within_limit() {
+    fn read_validated_local_image_accepts_supported_files_within_limit() {
         let directory = tempfile::tempdir().expect("create image fixture directory");
         let path = directory.path().join("background.png");
         image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]))
             .save_with_format(&path, image::ImageFormat::Png)
             .expect("write image fixture");
 
-        let result = read_local_image(path.to_string_lossy().to_string());
+        let (bytes, extension) =
+            read_validated_local_image(path.to_string_lossy().as_ref()).expect("valid image");
 
-        assert!(result.is_ok());
+        assert!(!bytes.is_empty());
+        assert_eq!(extension, "png");
     }
 
     #[test]
-    fn read_local_image_rejects_malformed_images() {
+    fn read_validated_local_image_rejects_malformed_images() {
         let mut file = tempfile::Builder::new()
             .suffix(".png")
             .tempfile()
             .expect("create malformed image fixture");
         std::io::Write::write_all(&mut file, b"not-an-image").expect("write malformed fixture");
 
-        let Err(error) = read_local_image(file.path().to_string_lossy().to_string()) else {
+        let Err(error) = read_validated_local_image(file.path().to_string_lossy().as_ref()) else {
             panic!("malformed image must fail");
         };
 
@@ -1022,13 +1104,13 @@ mod tests {
     }
 
     #[test]
-    fn read_local_image_rejects_unsupported_extensions() {
+    fn read_validated_local_image_rejects_unsupported_extensions() {
         let file = tempfile::Builder::new()
             .suffix(".txt")
             .tempfile()
             .expect("create unsupported fixture");
 
-        let Err(error) = read_local_image(file.path().to_string_lossy().to_string()) else {
+        let Err(error) = read_validated_local_image(file.path().to_string_lossy().as_ref()) else {
             panic!("unsupported image must fail");
         };
 
@@ -1038,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn read_local_image_rejects_files_over_limit_before_reading() {
+    fn read_validated_local_image_rejects_files_over_limit_before_reading() {
         let file = tempfile::Builder::new()
             .suffix(".webp")
             .tempfile()
@@ -1047,11 +1129,32 @@ mod tests {
             .set_len(MAX_LOCAL_IMAGE_BYTES + 1)
             .expect("resize oversized fixture");
 
-        let Err(error) = read_local_image(file.path().to_string_lossy().to_string()) else {
+        let Err(error) = read_validated_local_image(file.path().to_string_lossy().as_ref()) else {
             panic!("oversized image must fail");
         };
 
         assert!(error.to_string().contains("exceeds the 16 MiB limit"));
+    }
+
+    #[test]
+    fn cache_local_image_keeps_only_the_current_image() {
+        let directory = tempfile::tempdir().expect("create image cache directory");
+        let cache_dir = directory.path().join(LOCAL_IMAGE_CACHE_DIRECTORY);
+        let first = cache_local_image(&cache_dir, b"first", "png").expect("cache first image");
+        let second = cache_local_image(&cache_dir, b"second", "png").expect("cache second image");
+
+        assert_eq!(
+            std::fs::read(&second).expect("read cached image"),
+            b"second"
+        );
+        assert!(!first.exists());
+        let file_count = std::fs::read_dir(&cache_dir)
+            .expect("read image cache directory")
+            .flatten()
+            .filter_map(|entry| entry.file_type().ok())
+            .filter(std::fs::FileType::is_file)
+            .count();
+        assert_eq!(file_count, 1);
     }
 
     // ── normalize_path ─────────────────────────────────────────────────
