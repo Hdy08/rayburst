@@ -13,7 +13,7 @@ vi.mock('@shared/logger', () => ({
   logger: { warn: (...args: unknown[]) => warnMock(...args) },
 }))
 
-import { inferImageMimeType, useLocalImageObjectUrl } from '../useLocalImageObjectUrl'
+import { inferImageMimeType, normalizeImageBytes, useLocalImageObjectUrl } from '../useLocalImageObjectUrl'
 
 let objectUrlIndex = 0
 const createObjectURLMock = vi.fn((_blob: Blob) => `blob:background-${++objectUrlIndex}`)
@@ -66,6 +66,17 @@ describe('useLocalImageObjectUrl', () => {
     expect(inferImageMimeType('/home/me/wallpaper.unknown')).toBe('application/octet-stream')
   })
 
+  it('normalizes JSON byte arrays used by the Tauri IPC callback fallback', () => {
+    const pngHeader = [137, 80, 78, 71, 13, 10, 26, 10]
+
+    expect(Array.from(normalizeImageBytes(pngHeader))).toEqual(pngHeader)
+  })
+
+  it('rejects malformed local image payloads', () => {
+    expect(() => normalizeImageBytes([137, 80, -1])).toThrow('Invalid local image payload')
+    expect(() => normalizeImageBytes([137, , 80])).toThrow('Invalid local image payload')
+  })
+
   it('loads a local image through Rust IPC and exposes an object URL', async () => {
     invokeMock.mockResolvedValue(Uint8Array.from([1, 2, 3]).buffer)
 
@@ -80,6 +91,20 @@ describe('useLocalImageObjectUrl', () => {
     expect(blobArg).toBeInstanceOf(Blob)
     if (!(blobArg instanceof Blob)) throw new Error('expected Blob argument')
     expect(blobArg.type).toBe('image/png')
+    expect(imageUrl.value).toBe('blob:background-1')
+  })
+
+  it('preserves binary image data from a JSON byte-array IPC fallback', async () => {
+    const pngHeader = [137, 80, 78, 71, 13, 10, 26, 10]
+    invokeMock.mockResolvedValue(pngHeader)
+
+    const { imageUrl } = mountHarness('C:\\Users\\me\\Pictures\\background.png')
+    await flushPromises()
+
+    const blobArg = createObjectURLMock.mock.calls[0][0]
+    expect(blobArg).toBeInstanceOf(Blob)
+    if (!(blobArg instanceof Blob)) throw new Error('expected Blob argument')
+    expect(Array.from(new Uint8Array(await blobArg.arrayBuffer()))).toEqual(pngHeader)
     expect(imageUrl.value).toBe('blob:background-1')
   })
 
