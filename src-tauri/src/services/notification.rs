@@ -306,6 +306,11 @@ fn looks_like_absolute_path(path: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn is_default_notification_action(action: &notify_rust::ActionResponse<'_>) -> bool {
+    matches!(action, notify_rust::ActionResponse::Custom("default"))
+}
+
+#[cfg(target_os = "linux")]
 fn spawn_click_open_target_handler(
     app: tauri::AppHandle,
     target: TaskNotificationOpenTarget,
@@ -314,7 +319,7 @@ fn spawn_click_open_target_handler(
     tauri::async_runtime::spawn(async move {
         handle
             .wait_for_action_async(|action| {
-                if action == "default" {
+                if is_default_notification_action(action) {
                     open_notification_target(&app, &target);
                 } else {
                     log::debug!("notification:click-open-target ignored action={action:?}");
@@ -332,7 +337,7 @@ fn spawn_click_show_task_list_handler(
     tauri::async_runtime::spawn(async move {
         handle
             .wait_for_action_async(|action| {
-                if action == "default" {
+                if is_default_notification_action(action) {
                     show_notification_task_list(&app);
                 } else {
                     log::debug!("notification:click-show-task-list ignored action={action:?}");
@@ -1565,5 +1570,19 @@ mod tests {
         assert_eq!(identity.icon, "motrix-next");
         assert_eq!(identity.desktop_entry, "MotrixNext");
         assert_eq!(identity.urgency, notify_rust::Urgency::Normal);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_default_notification_action_is_recognized() {
+        assert!(is_default_notification_action(
+            &notify_rust::ActionResponse::Custom("default")
+        ));
+        assert!(!is_default_notification_action(
+            &notify_rust::ActionResponse::Custom("other")
+        ));
+        assert!(!is_default_notification_action(
+            &notify_rust::ActionResponse::Closed(notify_rust::CloseReason::Dismissed)
+        ));
     }
 }
