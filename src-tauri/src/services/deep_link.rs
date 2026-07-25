@@ -3,8 +3,11 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
+#[cfg(any(target_os = "windows", test))]
 const MOTRIX_SCHEME: &str = "motrixnext";
+#[cfg(any(target_os = "windows", test))]
 const NOTIFICATION_OPEN_FOLDER_ACTION: &str = "open-folder";
+#[cfg(any(target_os = "windows", test))]
 const NOTIFICATION_SHOW_TASK_LIST_ACTION: &str = "show-task-list";
 
 /// Deep-link URLs waiting for a recreated WebView to finish booting.
@@ -157,6 +160,7 @@ fn notification_open_target_from_url(
     Some(crate::services::notification::TaskNotificationOpenTarget { dir })
 }
 
+#[cfg(target_os = "windows")]
 fn is_notification_open_folder_url(value: &str) -> bool {
     matches!(
         motrix_action_from_url(value).as_deref(),
@@ -164,6 +168,7 @@ fn is_notification_open_folder_url(value: &str) -> bool {
     )
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn is_notification_show_task_list_url(value: &str) -> bool {
     matches!(
         motrix_action_from_url(value).as_deref(),
@@ -171,6 +176,7 @@ fn is_notification_show_task_list_url(value: &str) -> bool {
     )
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn motrix_action_from_url(value: &str) -> Option<String> {
     let parsed = url::Url::parse(value).ok()?;
     if parsed.scheme() != MOTRIX_SCHEME {

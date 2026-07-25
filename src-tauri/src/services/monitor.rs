@@ -85,6 +85,7 @@ pub struct TaskEvent {
     /// Parent task GID for metadata-followup downloads. Kept native-only so a
     /// start notification created for a magnet metadata task can be removed
     /// when its child download completes.
+    #[cfg(any(target_os = "windows", test))]
     #[serde(skip_serializing)]
     pub following: Option<String>,
     /// Full file list snapshot — required for correct multi-file BT
@@ -146,6 +147,7 @@ impl TaskEvent {
             is_bt,
             is_ed2k,
             sharing_kind: sharing_kind(task).map(SharingKind::as_str),
+            #[cfg(any(target_os = "windows", test))]
             following: task.following.clone().filter(|value| !value.is_empty()),
             files,
             announce_list,

@@ -42,7 +42,7 @@ const LINUX_NOTIFICATION_RETENTION_LIMIT: usize = 32;
 const WINDOWS_NOTIFICATION_OPEN_FOLDER_ACTION: &str = "open-folder";
 #[cfg(any(target_os = "windows", test))]
 const WINDOWS_NOTIFICATION_SHOW_TASK_LIST_ACTION: &str = "show-task-list";
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 const WINDOWS_START_NOTIFICATION_GROUP: &str = "download-start";
 #[cfg(target_os = "windows")]
 const WINDOWS_START_NOTIFICATION_LIMIT: usize = 64;
@@ -1187,6 +1187,7 @@ mod tests {
             is_bt: false,
             is_ed2k: false,
             sharing_kind: None,
+            #[cfg(any(target_os = "windows", test))]
             following: None,
             files: vec![crate::services::monitor::TaskEventFile {
                 path: "/tmp/file.zip".to_string(),
