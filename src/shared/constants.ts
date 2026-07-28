@@ -245,7 +245,7 @@ export const DEFAULT_APP_CONFIG = {
   taskListSelectedBackgroundOpacity: 100,
   taskListWatermark: true,
   backgroundImagePath: '',
-  backgroundOpacity: 35,
+  backgroundOpacity: 50,
   taskPaginationOpacity: 100,
   speedLimitButtonVisible: true,
   speedLimitButtonOpacity: 100,

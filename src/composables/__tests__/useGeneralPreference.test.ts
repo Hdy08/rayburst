@@ -94,9 +94,9 @@ describe('buildGeneralForm', () => {
     expect(form.backgroundImagePath).toBe(DEFAULT_APP_CONFIG.backgroundImagePath)
   })
 
-  it('defaults backgroundOpacity from DEFAULT_APP_CONFIG', () => {
+  it('defaults backgroundOpacity to 50 percent', () => {
     const form = buildGeneralForm(emptyConfig)
-    expect(form.backgroundOpacity).toBe(DEFAULT_APP_CONFIG.backgroundOpacity)
+    expect(form.backgroundOpacity).toBe(50)
   })
 
   it('defaults task pagination and speed limit button appearance from DEFAULT_APP_CONFIG', () => {

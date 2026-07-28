@@ -36,7 +36,7 @@ import {
 import { useAppMessage } from '@/composables/useAppMessage'
 import { logger } from '@shared/logger'
 import { DEFAULT_APP_CONFIG } from '@shared/constants'
-import { opacityPercentToCssValue } from '@shared/utils/opacity'
+import { opacityPercentToCssPercent } from '@shared/utils/opacity'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -74,11 +74,14 @@ let resizeObserver: ResizeObserver | null = null
 const SHRINK_DELAY_MS = 1000
 
 const speedLimitButtonOpacity = computed(() =>
-  opacityPercentToCssValue(preferenceStore.config.speedLimitButtonOpacity, DEFAULT_APP_CONFIG.speedLimitButtonOpacity),
+  opacityPercentToCssPercent(
+    preferenceStore.config.speedLimitButtonOpacity,
+    DEFAULT_APP_CONFIG.speedLimitButtonOpacity,
+  ),
 )
 const capsuleStyle = computed<CSSProperties>(() => {
   const style: CSSProperties = {
-    '--speedometer-opacity': speedLimitButtonOpacity.value,
+    '--speedometer-opacity-percent': speedLimitButtonOpacity.value,
   }
   if (capsuleWidth.value > 0) style.width = `${capsuleWidth.value}px`
   return style
@@ -371,15 +374,13 @@ async function handleScheduleToggle(enabled: boolean) {
   transition:
     width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
     border-color 0.2s ease,
-    opacity 0.2s ease,
     background 0.2s ease;
-  border: 1px solid var(--m3-outline-variant);
-  background: var(--m3-surface-container);
-  opacity: var(--speedometer-opacity);
+  border: 1px solid color-mix(in srgb, var(--m3-outline-variant) var(--speedometer-opacity-percent), transparent);
+  background: color-mix(in srgb, var(--m3-surface-container) var(--speedometer-opacity-percent), transparent);
   overflow: visible;
 }
 .speedometer:hover {
-  border-color: var(--m3-outline);
+  border-color: color-mix(in srgb, var(--m3-outline) var(--speedometer-opacity-percent), transparent);
 }
 .speedometer:active {
   transform: scale(0.97);
@@ -417,10 +418,14 @@ async function handleScheduleToggle(enabled: boolean) {
 
 /* ── LIMITED — tertiary color accent ─────────────────────────────── */
 .speedometer.limited {
-  border-color: color-mix(in srgb, var(--m3-tertiary) 32%, transparent);
+  border-color: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--m3-tertiary) 32%, transparent) var(--speedometer-opacity-percent),
+    transparent
+  );
 }
 .speedometer.limited:hover {
-  border-color: var(--m3-tertiary);
+  border-color: color-mix(in srgb, var(--m3-tertiary) var(--speedometer-opacity-percent), transparent);
 }
 .speedometer.limited .mode i {
   color: var(--m3-tertiary);

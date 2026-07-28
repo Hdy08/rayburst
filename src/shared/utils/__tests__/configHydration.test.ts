@@ -21,6 +21,7 @@ describe('hydrateAppConfig', () => {
     expect(result.config.locale).toBe('ja')
     expect(result.config.colorScheme).toBe(DEFAULT_APP_CONFIG.colorScheme)
     expect(result.config.maxConcurrentDownloads).toBe(DEFAULT_APP_CONFIG.maxConcurrentDownloads)
+    expect(result.config.backgroundOpacity).toBe(50)
   })
 
   it('deep-hydrates fixed nested objects without overwriting saved subfields', () => {
@@ -155,6 +156,10 @@ describe('hydrateAppConfig', () => {
       backgroundImagePath: null,
       backgroundOpacity: 'not-a-number',
     } as unknown as Partial<AppConfig>)
+    const preserved = hydrateAppConfig({
+      configVersion: CONFIG_VERSION,
+      backgroundOpacity: 35,
+    })
 
     expect(result.config.backgroundImagePath).toBe('C:\\Users\\me\\Pictures\\bg.png')
     expect(result.config.backgroundOpacity).toBe(100)
@@ -162,6 +167,8 @@ describe('hydrateAppConfig', () => {
     expect(invalid.config.backgroundImagePath).toBe(DEFAULT_APP_CONFIG.backgroundImagePath)
     expect(invalid.config.backgroundOpacity).toBe(DEFAULT_APP_CONFIG.backgroundOpacity)
     expect(invalid.repairs).toEqual(expect.arrayContaining(['backgroundImagePath', 'backgroundOpacity']))
+    expect(preserved.config.backgroundOpacity).toBe(35)
+    expect(preserved.repairs).not.toContain('backgroundOpacity')
   })
 
   it('repairs invalid task card, pagination, and speed limit button appearance settings', () => {
