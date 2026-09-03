@@ -730,27 +730,22 @@ pub fn run() {
 
     #[cfg(desktop)]
     {
-        #[cfg(target_os = "windows")]
-        {
-            // The handoff plugin must initialize before single-instance: a
-            // secondary process grants the primary process foreground access
-            // immediately before the latter receives WM_COPYDATA.
-            builder = builder.plugin(windows_focus::init());
-        }
-
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Handle protocol activations synchronously in the single-instance
+            // callback. Deferring these actions loses the notification's
+            // short-lived Windows foreground permission before activation runs.
+            #[cfg(target_os = "windows")]
+            if services::deep_link::handle_native_action_args(
+                app,
+                &argv,
+                "single-instance-native-action",
+            ) {
+                return;
+            }
+
             let app_handle = app.clone();
             let args = argv;
             if let Err(e) = app.run_on_main_thread(move || {
-                #[cfg(target_os = "windows")]
-                if services::deep_link::handle_native_action_args(
-                    &app_handle,
-                    &args,
-                    "single-instance-native-action",
-                ) {
-                    return;
-                }
-
                 let urls = services::deep_link::filter_external_input_args(&args);
                 if !urls.is_empty() {
                     services::deep_link::route_external_inputs(

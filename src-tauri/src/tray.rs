@@ -151,21 +151,7 @@ pub fn activate_main_window(app: &AppHandle, source: &'static str) -> WindowActi
     if let Err(e) = window.show() {
         log::warn!("window:activate-show-failed source={source} error={e}");
     }
-    let skip_focus = {
-        #[cfg(target_os = "windows")]
-        {
-            crate::windows_focus::is_notification_activation_source(source)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            false
-        }
-    };
-    if skip_focus {
-        log::debug!(
-            "window:activate-focus-skipped source={source} reason=notification-native-activation"
-        );
-    } else if let Err(e) = window.set_focus() {
+    if let Err(e) = window.set_focus() {
         log::warn!("window:activate-focus-failed source={source} error={e}");
     }
     #[cfg(target_os = "windows")]
