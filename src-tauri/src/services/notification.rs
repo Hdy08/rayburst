@@ -809,18 +809,9 @@ fn send_platform_notification(
 
     let handle = notification.show().map_err(|error| error.to_string())?;
     let registry = app.state::<LinuxNotificationRegistry>();
-    let has_actions = content.click_open_target.is_some()
-        || content.click_show_task_list
-        || content.click_open_file_gid.is_some()
-        || content.click_show_in_folder_gid.is_some();
-    let retention = if has_actions {
-        let id = handle.id();
-        let retention = registry.observe_unretained(id);
-        spawn_linux_notification_action_handler(app.clone(), content, handle);
-        retention
-    } else {
-        registry.retain(handle)
-    };
+    let id = handle.id();
+    let retention = registry.observe_unretained(id);
+    spawn_linux_notification_action_handler(app.clone(), content, handle);
 
     Ok(NotificationDispatchResult::Delivered {
         id: retention.id,
@@ -1040,7 +1031,11 @@ fn windows_notification_activation_url(
     action_secret: Option<&str>,
 ) -> Option<String> {
     if let Some(target) = content.click_open_target.as_ref() {
-        windows_open_folder_activation_url(target, action_secret)
+        windows_open_folder_activation_url(target, action_secret).or_else(|| {
+            Some(format!(
+                "motrixnext://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}"
+            ))
+        })
     } else {
         Some(if content.click_show_task_list {
             windows_show_task_list_activation_url()
