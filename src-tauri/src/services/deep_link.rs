@@ -237,23 +237,59 @@ fn notification_task_action_from_url(
 ) -> Option<(crate::services::frontend_action::FrontendActionKind, String)> {
     let parsed = url::Url::parse(value).ok()?;
     if parsed.scheme() != MOTRIX_SCHEME
-        || parsed.host_str() != Some(NOTIFICATION_TASK_ACTION_ROUTE)
-        || parsed.path() != ""
         || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
     {
         return None;
     }
 
-    let mut action = None;
-    let mut gid = None;
-    for (key, value) in parsed.query_pairs() {
-        match key.as_ref() {
-            "action" if action.is_none() => action = Some(value.into_owned()),
-            "gid" if gid.is_none() => gid = Some(value.into_owned()),
+    let path_segments = if parsed.path().is_empty() {
+        Vec::new()
+    } else {
+        parsed.path_segments()?.collect::<Vec<_>>()
+    };
+    let (path_action, path_gid) = match parsed.host_str() {
+        Some(host) if host == NOTIFICATION_TASK_ACTION_ROUTE => match path_segments.as_slice() {
+            [] | [""] => (None, None),
+            [action, gid] if !action.is_empty() && !gid.is_empty() => {
+                (Some((*action).to_string()), Some((*gid).to_string()))
+            }
             _ => return None,
+        },
+        None => match path_segments.as_slice() {
+            [route] | [route, ""] if *route == NOTIFICATION_TASK_ACTION_ROUTE => (None, None),
+            [route, action, gid]
+                if *route == NOTIFICATION_TASK_ACTION_ROUTE
+                    && !action.is_empty()
+                    && !gid.is_empty() =>
+            {
+                (Some((*action).to_string()), Some((*gid).to_string()))
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    let (action, gid) = match (path_action, path_gid) {
+        (Some(action), Some(gid)) if parsed.query().is_none() => (action, gid),
+        (None, None) => {
+            let mut action = None;
+            let mut gid = None;
+            for (key, value) in parsed.query_pairs() {
+                match key.as_ref() {
+                    "action" if action.is_none() => action = Some(value.into_owned()),
+                    "gid" if gid.is_none() => gid = Some(value.into_owned()),
+                    _ => return None,
+                }
+            }
+            (action?, gid?)
         }
-    }
-    let gid = gid?.trim().to_string();
+        _ => return None,
+    };
+
+    let gid = gid.trim().to_string();
     if gid.is_empty()
         || gid.chars().count() > NOTIFICATION_GID_MAX_CHARS
         || !gid
@@ -263,7 +299,7 @@ fn notification_task_action_from_url(
         return None;
     }
 
-    let action = match action?.as_str() {
+    let action = match action.as_str() {
         NOTIFICATION_OPEN_FILE_ACTION => {
             crate::services::frontend_action::FrontendActionKind::OpenTaskFile
         }
@@ -279,8 +315,17 @@ fn notification_task_action_from_url(
 fn is_notification_task_action_url(value: &str) -> bool {
     url::Url::parse(value)
         .map(|parsed| {
-            parsed.scheme() == MOTRIX_SCHEME
-                && parsed.host_str() == Some(NOTIFICATION_TASK_ACTION_ROUTE)
+            if parsed.scheme() != MOTRIX_SCHEME {
+                return false;
+            }
+            if parsed.host_str() == Some(NOTIFICATION_TASK_ACTION_ROUTE) {
+                return true;
+            }
+            parsed.host_str().is_none()
+                && parsed
+                    .path_segments()
+                    .and_then(|mut segments| segments.next())
+                    == Some(NOTIFICATION_TASK_ACTION_ROUTE)
         })
         .unwrap_or(false)
 }
@@ -600,6 +645,37 @@ mod tests {
         .is_none());
         assert!(notification_task_action_from_url(
             "motrixnext://task-action?action=unknown&gid=g1"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn parses_notification_task_actions_from_path_urls_and_windows_normalization() {
+        assert!(notification_task_action_from_url(
+            "motrixnext://task-action/open-file/0123456789abcdef"
+        )
+        .is_some());
+        assert!(
+            notification_task_action_from_url("motrixnext:/task-action/show-in-folder/g-1")
+                .is_some()
+        );
+        assert!(notification_task_action_from_url(
+            "motrixnext://task-action/?action=open-file&gid=g1"
+        )
+        .is_some());
+        assert!(notification_task_action_from_url(
+            "motrixnext:/task-action/?action=show-in-folder&gid=g1"
+        )
+        .is_some());
+        assert!(
+            notification_task_action_from_url("motrixnext://task-action/open-file/g1?extra=1")
+                .is_none()
+        );
+        assert!(
+            notification_task_action_from_url("motrixnext://task-action/open-file/g1/").is_none()
+        );
+        assert!(notification_task_action_from_url(
+            "motrixnext://task-action/open-file/g1#fragment"
         )
         .is_none());
     }

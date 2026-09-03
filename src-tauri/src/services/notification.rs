@@ -799,12 +799,13 @@ fn send_platform_notification(
         .summary(&content.title)
         .body(&content.body);
 
+    let texts = texts_for_locale(content.locale);
     notification.action("default", "Open");
     if content.click_open_file_gid.is_some() {
-        notification.action("open-file", "Open File");
+        notification.action("open-file", texts.open_file_action);
     }
     if content.click_show_in_folder_gid.is_some() {
-        notification.action("show-in-folder", "Show in Folder");
+        notification.action("show-in-folder", texts.show_in_folder_action);
     }
 
     let handle = notification.show().map_err(|error| error.to_string())?;
@@ -992,11 +993,13 @@ fn build_windows_toast_xml(
         })
         .unwrap_or_default();
 
+    let texts = texts_for_locale(content.locale);
     let mut actions = String::new();
     if let Some(gid) = content.click_open_file_gid.as_deref() {
         if let Some(url) = windows_task_action_url(WINDOWS_NOTIFICATION_OPEN_FILE_ACTION, gid) {
             actions.push_str(&format!(
-                r#"<action content="Open File" arguments="{}" activationType="protocol"/>"#,
+                r#"<action content="{}" arguments="{}" activationType="protocol"/>"#,
+                escape_windows_toast_xml(texts.open_file_action),
                 escape_windows_toast_xml(&url)
             ));
         }
@@ -1005,7 +1008,8 @@ fn build_windows_toast_xml(
         if let Some(url) = windows_task_action_url(WINDOWS_NOTIFICATION_SHOW_IN_FOLDER_ACTION, gid)
         {
             actions.push_str(&format!(
-                r#"<action content="Show in Folder" arguments="{}" activationType="protocol"/>"#,
+                r#"<action content="{}" arguments="{}" activationType="protocol"/>"#,
+                escape_windows_toast_xml(texts.show_in_folder_action),
                 escape_windows_toast_xml(&url)
             ));
         }
@@ -1223,6 +1227,13 @@ pub(crate) fn notification_action_secret(app: &tauri::AppHandle) -> Option<Strin
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_task_action_url(action: &str, gid: &str) -> Option<String> {
+    if !matches!(
+        action,
+        WINDOWS_NOTIFICATION_OPEN_FILE_ACTION | WINDOWS_NOTIFICATION_SHOW_IN_FOLDER_ACTION
+    ) {
+        return None;
+    }
+
     let gid = gid.trim();
     if gid.is_empty()
         || gid.chars().count() > 128
@@ -1236,9 +1247,7 @@ fn windows_task_action_url(action: &str, gid: &str) -> Option<String> {
         "motrixnext://{WINDOWS_NOTIFICATION_TASK_ACTION_ROUTE}"
     ))
     .ok()?;
-    url.query_pairs_mut()
-        .append_pair("action", action)
-        .append_pair("gid", gid);
+    url.path_segments_mut().ok()?.push(action).push(gid);
     Some(url.to_string())
 }
 
@@ -1642,9 +1651,27 @@ mod tests {
 
         assert!(xml.contains(r#"content="Open File""#));
         assert!(xml.contains(r#"content="Show in Folder""#));
-        assert!(xml.contains("action=open-file"));
-        assert!(xml.contains("action=show-in-folder"));
-        assert!(xml.contains("gid=0123456789abcdef"));
+        assert!(xml.contains("motrixnext://task-action/open-file/0123456789abcdef"));
+        assert!(xml.contains("motrixnext://task-action/show-in-folder/0123456789abcdef"));
+    }
+
+    #[test]
+    fn windows_toast_xml_localises_completion_actions() {
+        let content = TaskNotificationContent {
+            kind: TaskNotificationKind::Complete,
+            title: "下载完成".to_string(),
+            body: "已保存：file.zip".to_string(),
+            locale: "zh-CN",
+            click_open_target: None,
+            click_show_task_list: false,
+            click_open_file_gid: Some("g1".to_string()),
+            click_show_in_folder_gid: Some("g1".to_string()),
+        };
+
+        let xml = build_windows_toast_xml(&content, None);
+
+        assert!(xml.contains(r#"content="打开文件""#));
+        assert!(xml.contains(r#"content="在文件夹中显示""#));
     }
 
     #[test]

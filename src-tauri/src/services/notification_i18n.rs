@@ -17,6 +17,8 @@ pub struct TaskNotificationTexts {
     pub download_failed_title: &'static str,
     pub download_failed_body: &'static str,
     pub error_unknown: &'static str,
+    pub open_file_action: &'static str,
+    pub show_in_folder_action: &'static str,
 }
 
 const EN_US_TEXTS: TaskNotificationTexts = TaskNotificationTexts {
@@ -32,6 +34,8 @@ const EN_US_TEXTS: TaskNotificationTexts = TaskNotificationTexts {
     download_failed_title: "Download Failed",
     download_failed_body: "{taskName}: {reason}",
     error_unknown: "Unknown error",
+    open_file_action: "Open File",
+    show_in_folder_action: "Show in Folder",
 };
 
 #[cfg(test)]
@@ -103,6 +107,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "فشل التنزيل",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "فتح الملف",
+            show_in_folder_action: "إظهار في المجلد",
         },
         "bg" => TaskNotificationTexts {
             download_start_title: "Изтеглянето започна",
@@ -117,6 +123,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Изтеглянето е неуспешно",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Отвори файл",
+            show_in_folder_action: "Покажи в папката",
         },
         "ca" => TaskNotificationTexts {
             download_start_title: "Descàrrega iniciada",
@@ -131,6 +139,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Descàrrega fallida",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Obrir fitxer",
+            show_in_folder_action: "Mostra a la carpeta",
         },
         "de" => TaskNotificationTexts {
             download_start_title: "Download gestartet",
@@ -146,6 +156,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Download fehlgeschlagen",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Datei öffnen",
+            show_in_folder_action: "Im Ordner anzeigen",
         },
         "el" => TaskNotificationTexts {
             download_start_title: "Η λήψη ξεκίνησε",
@@ -160,6 +172,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Η λήψη απέτυχε",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Άνοιγμα αρχείου",
+            show_in_folder_action: "Εμφάνιση στον φάκελο",
         },
         "es" => TaskNotificationTexts {
             download_start_title: "Descarga iniciada",
@@ -174,6 +188,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Descarga fallida",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Abrir archivo",
+            show_in_folder_action: "Mostrar en carpeta",
         },
         "fa" => TaskNotificationTexts {
             download_start_title: "دانلود شروع شد",
@@ -188,6 +204,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "دانلود ناموفق بود",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "باز کردن فایل",
+            show_in_folder_action: "نمایش در پوشه",
         },
         "fr" => TaskNotificationTexts {
             download_start_title: "Téléchargement démarré",
@@ -202,6 +220,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Échec du téléchargement",
             download_failed_body: "{taskName} : {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Ouvrir le fichier",
+            show_in_folder_action: "Afficher dans le dossier",
         },
         "hu" => TaskNotificationTexts {
             download_start_title: "Letöltés elindult",
@@ -216,6 +236,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Letöltés sikertelen",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Fájl megnyitása",
+            show_in_folder_action: "Megjelenítés a mappában",
         },
         "hi" => TaskNotificationTexts {
             download_start_title: "डाउनलोड शुरू हुआ",
@@ -230,6 +252,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "डाउनलोड विफल",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "अज्ञात त्रुटि",
+            open_file_action: "फ़ाइल खोलें",
+            show_in_folder_action: "Folder में दिखाएं",
         },
         "id" => TaskNotificationTexts {
             download_start_title: "Unduhan dimulai",
@@ -244,6 +268,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Unduhan gagal",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Buka File",
+            show_in_folder_action: "Tampilkan di folder",
         },
         "it" => TaskNotificationTexts {
             download_start_title: "Download avviato",
@@ -258,6 +284,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Download non riuscito",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Apri file",
+            show_in_folder_action: "Mostra nella cartella",
         },
         "ja" => TaskNotificationTexts {
             download_start_title: "ダウンロード開始",
@@ -272,6 +300,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "ダウンロード失敗",
             download_failed_body: "{taskName}：{reason}",
             error_unknown: "不明なエラー",
+            open_file_action: "ファイルを開く",
+            show_in_folder_action: "フォルダーで表示",
         },
         "ko" => TaskNotificationTexts {
             download_start_title: "다운로드 시작",
@@ -286,6 +316,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "다운로드 실패",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "알 수 없는 오류",
+            open_file_action: "파일 열기",
+            show_in_folder_action: "폴더에서 보기",
         },
         "nb" => TaskNotificationTexts {
             download_start_title: "Nedlasting startet",
@@ -300,6 +332,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Nedlasting mislyktes",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Åpne fil",
+            show_in_folder_action: "Vis i mappe",
         },
         "nl" => TaskNotificationTexts {
             download_start_title: "Download gestart",
@@ -314,6 +348,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Download mislukt",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Bestand openen",
+            show_in_folder_action: "Tonen in map",
         },
         "pl" => TaskNotificationTexts {
             download_start_title: "Pobieranie rozpoczęte",
@@ -328,6 +364,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Pobieranie nie powiodło się",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Otwórz plik",
+            show_in_folder_action: "Pokaż w folderze",
         },
         "pt-BR" => TaskNotificationTexts {
             download_start_title: "Download iniciado",
@@ -342,6 +380,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Download falhou",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Abrir arquivo",
+            show_in_folder_action: "Mostrar na pasta",
         },
         "ro" => TaskNotificationTexts {
             download_start_title: "Descărcare începută",
@@ -356,6 +396,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Descărcarea a eșuat",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Deschide fișierul",
+            show_in_folder_action: "Arată în dosar",
         },
         "ru" => TaskNotificationTexts {
             download_start_title: "Загрузка начата",
@@ -370,6 +412,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Загрузка не удалась",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Открыть файл",
+            show_in_folder_action: "Показать в папке",
         },
         "th" => TaskNotificationTexts {
             download_start_title: "เริ่มดาวน์โหลดแล้ว",
@@ -384,6 +428,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "ดาวน์โหลดไม่สำเร็จ",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "เปิดไฟล์",
+            show_in_folder_action: "แสดงในโฟลเดอร์",
         },
         "tr" => TaskNotificationTexts {
             download_start_title: "İndirme başladı",
@@ -398,6 +444,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "İndirme başarısız",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Dosyayı aç",
+            show_in_folder_action: "Klasörde göster",
         },
         "uk" => TaskNotificationTexts {
             download_start_title: "Завантаження розпочато",
@@ -412,6 +460,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Завантаження не вдалося",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Відкрити файл",
+            show_in_folder_action: "Показати в папці",
         },
         "vi" => TaskNotificationTexts {
             download_start_title: "Tải xuống đã bắt đầu",
@@ -426,6 +476,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "Tải xuống thất bại",
             download_failed_body: "{taskName}: {reason}",
             error_unknown: "Unknown error",
+            open_file_action: "Mở tệp",
+            show_in_folder_action: "Hiện trong thư mục",
         },
         "zh-CN" => TaskNotificationTexts {
             download_start_title: "下载已开始",
@@ -440,6 +492,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "下载失败",
             download_failed_body: "{taskName}：{reason}",
             error_unknown: "未知错误",
+            open_file_action: "打开文件",
+            show_in_folder_action: "在文件夹中显示",
         },
         "zh-TW" => TaskNotificationTexts {
             download_start_title: "下載已開始",
@@ -454,6 +508,8 @@ pub fn texts_for_locale(locale: &str) -> TaskNotificationTexts {
             download_failed_title: "下載失敗",
             download_failed_body: "{taskName}：{reason}",
             error_unknown: "未知錯誤",
+            open_file_action: "開啟檔案",
+            show_in_folder_action: "在資料夾中顯示",
         },
         _ => EN_US_TEXTS,
     }
@@ -559,6 +615,14 @@ mod tests {
                 !texts.error_unknown.is_empty(),
                 "empty unknown error for {locale}"
             );
+            assert!(
+                !texts.open_file_action.is_empty(),
+                "empty open-file action for {locale}"
+            );
+            assert!(
+                !texts.show_in_folder_action.is_empty(),
+                "empty show-in-folder action for {locale}"
+            );
         }
     }
 
@@ -613,5 +677,12 @@ mod tests {
             format_error_message(texts.download_failed_body, "file.zip", "Network error"),
             "file.zip: Network error"
         );
+    }
+
+    #[test]
+    fn localises_task_action_texts() {
+        let texts = texts_for_locale("zh-CN");
+        assert_eq!(texts.open_file_action, "打开文件");
+        assert_eq!(texts.show_in_folder_action, "在文件夹中显示");
     }
 }
