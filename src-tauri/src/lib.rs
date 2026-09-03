@@ -730,6 +730,14 @@ pub fn run() {
 
     #[cfg(desktop)]
     {
+        #[cfg(target_os = "windows")]
+        {
+            // The handoff plugin must initialize before single-instance: a
+            // secondary process grants the primary process foreground access
+            // immediately before the latter receives WM_COPYDATA.
+            builder = builder.plugin(windows_focus::init());
+        }
+
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let app_handle = app.clone();
             let args = argv;
