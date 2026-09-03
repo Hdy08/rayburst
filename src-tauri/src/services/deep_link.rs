@@ -9,6 +9,16 @@ const MOTRIX_SCHEME: &str = "motrixnext";
 const NOTIFICATION_OPEN_FOLDER_ACTION: &str = "open-folder";
 #[cfg(any(target_os = "windows", test))]
 const NOTIFICATION_SHOW_TASK_LIST_ACTION: &str = "show-task-list";
+#[cfg(any(target_os = "windows", test))]
+const NOTIFICATION_TASK_ACTION_ROUTE: &str = "task-action";
+#[cfg(any(target_os = "windows", test))]
+const NOTIFICATION_ACTIVATE_ACTION: &str = "activate";
+#[cfg(any(target_os = "windows", test))]
+const NOTIFICATION_OPEN_FILE_ACTION: &str = "open-file";
+#[cfg(any(target_os = "windows", test))]
+const NOTIFICATION_SHOW_IN_FOLDER_ACTION: &str = "show-in-folder";
+#[cfg(any(target_os = "windows", test))]
+const NOTIFICATION_GID_MAX_CHARS: usize = 128;
 
 /// Deep-link URLs waiting for a recreated WebView to finish booting.
 ///
@@ -100,19 +110,48 @@ pub fn handle_native_action_args(app: &AppHandle, args: &[String], source: &'sta
                 );
                 continue;
             };
+            crate::tray::activate_main_window(app, source);
             crate::services::notification::open_notification_target(app, &target);
             log::info!(
                 "deep_link:native-action-open-target source={source} dir={:?}",
                 target.dir
             );
-        } else if is_notification_show_task_list_url(arg) {
+        } else if is_notification_show_task_list_candidate(arg) {
             handled = true;
-            crate::services::frontend_action::dispatch_frontend_action(
-                app,
-                crate::services::frontend_action::FrontendActionChannel::NotificationAction,
-                crate::services::frontend_action::FrontendActionKind::ShowTaskList,
-                source,
-            );
+            if is_notification_show_task_list_url(arg) {
+                crate::services::frontend_action::dispatch_frontend_action(
+                    app,
+                    crate::services::frontend_action::FrontendActionChannel::NotificationAction,
+                    crate::services::frontend_action::FrontendActionKind::ShowTaskList,
+                    source,
+                );
+            } else {
+                log::warn!("deep_link:native-action-rejected source={source} reason=invalid-show-task-list");
+            }
+        } else if is_notification_activate_candidate(arg) {
+            handled = true;
+            if is_notification_activate_url(arg) {
+                crate::tray::activate_main_window(app, source);
+            } else {
+                log::warn!(
+                    "deep_link:native-action-rejected source={source} reason=invalid-activate"
+                );
+            }
+        } else if is_notification_task_action_url(arg) {
+            handled = true;
+            if let Some((action, gid)) = notification_task_action_from_url(arg) {
+                crate::services::frontend_action::dispatch_frontend_action_with_payload(
+                    app,
+                    crate::services::frontend_action::FrontendActionChannel::NotificationAction,
+                    action,
+                    Some(gid),
+                    source,
+                );
+            } else {
+                log::warn!(
+                    "deep_link:native-action-rejected source={source} reason=invalid-task-action"
+                );
+            }
         }
     }
     handled
@@ -173,7 +212,84 @@ fn is_notification_show_task_list_url(value: &str) -> bool {
     matches!(
         motrix_action_from_url(value).as_deref(),
         Some(NOTIFICATION_SHOW_TASK_LIST_ACTION)
-    )
+    ) && url_has_no_query_or_fragment(value)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_notification_show_task_list_candidate(value: &str) -> bool {
+    motrix_action_from_url(value).as_deref() == Some(NOTIFICATION_SHOW_TASK_LIST_ACTION)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_notification_activate_url(value: &str) -> bool {
+    motrix_action_from_url(value).as_deref() == Some(NOTIFICATION_ACTIVATE_ACTION)
+        && url_has_no_query_or_fragment(value)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_notification_activate_candidate(value: &str) -> bool {
+    motrix_action_from_url(value).as_deref() == Some(NOTIFICATION_ACTIVATE_ACTION)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn notification_task_action_from_url(
+    value: &str,
+) -> Option<(crate::services::frontend_action::FrontendActionKind, String)> {
+    let parsed = url::Url::parse(value).ok()?;
+    if parsed.scheme() != MOTRIX_SCHEME
+        || parsed.host_str() != Some(NOTIFICATION_TASK_ACTION_ROUTE)
+        || parsed.path() != ""
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+
+    let mut action = None;
+    let mut gid = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "action" if action.is_none() => action = Some(value.into_owned()),
+            "gid" if gid.is_none() => gid = Some(value.into_owned()),
+            _ => return None,
+        }
+    }
+    let gid = gid?.trim().to_string();
+    if gid.is_empty()
+        || gid.chars().count() > NOTIFICATION_GID_MAX_CHARS
+        || !gid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+
+    let action = match action?.as_str() {
+        NOTIFICATION_OPEN_FILE_ACTION => {
+            crate::services::frontend_action::FrontendActionKind::OpenTaskFile
+        }
+        NOTIFICATION_SHOW_IN_FOLDER_ACTION => {
+            crate::services::frontend_action::FrontendActionKind::ShowTaskInFolder
+        }
+        _ => return None,
+    };
+    Some((action, gid))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_notification_task_action_url(value: &str) -> bool {
+    url::Url::parse(value)
+        .map(|parsed| {
+            parsed.scheme() == MOTRIX_SCHEME
+                && parsed.host_str() == Some(NOTIFICATION_TASK_ACTION_ROUTE)
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn url_has_no_query_or_fragment(value: &str) -> bool {
+    url::Url::parse(value)
+        .map(|parsed| parsed.query().is_none() && parsed.fragment().is_none())
+        .unwrap_or(false)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -362,7 +478,8 @@ fn wake_main_window(app: &AppHandle, source: &'static str, silent: bool) {
 mod tests {
     use super::{
         append_unique_pending, filter_external_input_args, is_autostart_arg_launch,
-        is_notification_show_task_list_url, notification_open_target_from_url,
+        is_notification_activate_url, is_notification_show_task_list_url,
+        notification_open_target_from_url, notification_task_action_from_url,
         take_pending_deep_links, PendingDeepLinkState,
     };
     use crate::services::notification::{sign_notification_open_dir, TaskNotificationOpenTarget};
@@ -458,6 +575,40 @@ mod tests {
         assert!(!is_notification_show_task_list_url(
             "https://example.com/show-task-list"
         ));
+    }
+
+    #[test]
+    fn parses_notification_task_actions_with_strict_gid_validation() {
+        assert_eq!(
+            notification_task_action_from_url(
+                "motrixnext://task-action?action=open-file&gid=0123456789abcdef"
+            )
+            .map(|(_, gid)| gid),
+            Some("0123456789abcdef".to_string())
+        );
+        assert!(notification_task_action_from_url(
+            "motrixnext://task-action?action=show-in-folder&gid=g-1"
+        )
+        .is_some());
+        assert!(notification_task_action_from_url(
+            "motrixnext://task-action?action=open-file&gid=bad%20gid"
+        )
+        .is_none());
+        assert!(notification_task_action_from_url(
+            "motrixnext://task-action?action=open-file&gid=g1&gid=g2"
+        )
+        .is_none());
+        assert!(notification_task_action_from_url(
+            "motrixnext://task-action?action=unknown&gid=g1"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn detects_activate_action_without_query_parameters() {
+        assert!(is_notification_activate_url("motrixnext://activate"));
+        assert!(is_notification_activate_url("motrixnext:/activate"));
+        assert!(!is_notification_activate_url("motrixnext://activate?x=1"));
     }
 
     #[test]

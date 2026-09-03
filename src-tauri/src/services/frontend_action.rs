@@ -85,6 +85,8 @@ pub enum FrontendActionKind {
     #[cfg(target_os = "macos")]
     ReportIssue,
     ShowTaskList,
+    OpenTaskFile,
+    ShowTaskInFolder,
 }
 
 impl FrontendActionKind {
@@ -102,6 +104,8 @@ impl FrontendActionKind {
             #[cfg(target_os = "macos")]
             Self::ReportIssue => "report-issue",
             Self::ShowTaskList => "show-task-list",
+            Self::OpenTaskFile => "open-file",
+            Self::ShowTaskInFolder => "show-in-folder",
         }
     }
 }
@@ -111,11 +115,29 @@ impl FrontendActionKind {
 pub struct PendingFrontendAction {
     channel: FrontendActionChannel,
     action: FrontendActionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<String>,
 }
 
 impl PendingFrontendAction {
     fn new(channel: FrontendActionChannel, action: FrontendActionKind) -> Self {
-        Self { channel, action }
+        Self {
+            channel,
+            action,
+            payload: None,
+        }
+    }
+
+    fn with_payload(
+        channel: FrontendActionChannel,
+        action: FrontendActionKind,
+        payload: String,
+    ) -> Self {
+        Self {
+            channel,
+            action,
+            payload: Some(payload),
+        }
     }
 }
 
@@ -160,6 +182,16 @@ pub fn dispatch_frontend_action(
     action: FrontendActionKind,
     source: &'static str,
 ) {
+    dispatch_frontend_action_with_payload(app, channel, action, None, source);
+}
+
+pub fn dispatch_frontend_action_with_payload(
+    app: &AppHandle,
+    channel: FrontendActionChannel,
+    action: FrontendActionKind,
+    payload: Option<String>,
+    source: &'static str,
+) {
     let window_was_alive = app.get_webview_window("main").is_some();
     let frontend_ready = is_frontend_ready(app);
 
@@ -171,7 +203,11 @@ pub fn dispatch_frontend_action(
 
     if window_was_alive && frontend_ready {
         wake_main_window(app, source);
-        match app.emit(channel.event_name(), action.as_str()) {
+        let event_payload = payload
+            .as_deref()
+            .map(|value| serde_json::json!({ "action": action.as_str(), "payload": value }))
+            .unwrap_or_else(|| serde_json::Value::String(action.as_str().to_string()));
+        match app.emit(channel.event_name(), event_payload) {
             Ok(()) => return,
             Err(e) => {
                 log::warn!(
@@ -183,7 +219,10 @@ pub fn dispatch_frontend_action(
         }
     }
 
-    if queue_pending_frontend_action(app, PendingFrontendAction::new(channel, action), source) {
+    let pending = payload
+        .map(|value| PendingFrontendAction::with_payload(channel, action, value))
+        .unwrap_or_else(|| PendingFrontendAction::new(channel, action));
+    if queue_pending_frontend_action(app, pending, source) {
         schedule_main_window_wake(app, source);
     }
 }

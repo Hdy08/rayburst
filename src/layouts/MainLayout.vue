@@ -11,6 +11,7 @@ import { logger } from '@shared/logger'
 import {
   buildHistoryRecord,
   buildSharingCompletionRecord,
+  historyRecordToTask,
   isMetadataTask,
   updateHistoryFilePath,
 } from '@/composables/useTaskLifecycle'
@@ -232,10 +233,43 @@ const { setupListeners } = useAppEvents({
   showEngineOverlay,
   isExiting,
   handleExitConfirm,
+  onNotificationTaskAction: handleNotificationTaskAction,
   onAbout: () => {
     showAbout.value = true
   },
 })
+
+async function handleNotificationTaskAction(action: 'open-file' | 'show-in-folder', gid: string): Promise<void> {
+  const normalizedGid = gid.trim()
+  if (!normalizedGid) return
+
+  let task: Aria2Task | null = null
+  for (let attempt = 0; attempt < 2 && !task; attempt += 1) {
+    try {
+      task = await aria2Api.fetchTaskItem({ gid: normalizedGid })
+    } catch (error) {
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 120))
+      else logger.debug('Notification.fetchTask', error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  if (!task) {
+    try {
+      const record = await useHistoryStore().getRecordByGid(normalizedGid)
+      task = record ? historyRecordToTask(record) : null
+    } catch (error) {
+      logger.warn('Notification.historyTask', error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  if (!task) {
+    logger.warn('Notification.taskUnavailable', `gid=${normalizedGid}`)
+    return
+  }
+
+  if (action === 'open-file') await openFileFromNotification(task)
+  else await showInFolderFromNotification(task)
+}
 
 function startAppToastListener() {
   stopAppToastListener()

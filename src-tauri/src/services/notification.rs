@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
 use tauri_plugin_notification::NotificationExt;
 
 #[cfg(any(target_os = "windows", test))]
@@ -42,6 +42,14 @@ const LINUX_NOTIFICATION_RETENTION_LIMIT: usize = 32;
 const WINDOWS_NOTIFICATION_OPEN_FOLDER_ACTION: &str = "open-folder";
 #[cfg(any(target_os = "windows", test))]
 const WINDOWS_NOTIFICATION_SHOW_TASK_LIST_ACTION: &str = "show-task-list";
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_NOTIFICATION_ACTIVATE_ACTION: &str = "activate";
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_NOTIFICATION_TASK_ACTION_ROUTE: &str = "task-action";
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_NOTIFICATION_OPEN_FILE_ACTION: &str = "open-file";
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_NOTIFICATION_SHOW_IN_FOLDER_ACTION: &str = "show-in-folder";
 #[cfg(target_os = "windows")]
 const WINDOWS_START_NOTIFICATION_GROUP: &str = "download-start";
 #[cfg(target_os = "windows")]
@@ -193,6 +201,8 @@ pub struct TaskNotificationContent {
     pub locale: &'static str,
     pub click_open_target: Option<TaskNotificationOpenTarget>,
     pub click_show_task_list: bool,
+    pub click_open_file_gid: Option<String>,
+    pub click_show_in_folder_gid: Option<String>,
 }
 
 /// A submitted task identity supplied by the frontend with a start notification.
@@ -311,37 +321,49 @@ fn is_default_notification_action(action: &notify_rust::ActionResponse<'_>) -> b
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_click_open_target_handler(
+fn spawn_linux_notification_action_handler(
     app: tauri::AppHandle,
-    target: TaskNotificationOpenTarget,
+    content: &TaskNotificationContent,
     handle: notify_rust::NotificationHandle,
 ) {
+    let open_target = content.click_open_target.clone();
+    let click_show_task_list = content.click_show_task_list;
+    let open_file_gid = content.click_open_file_gid.clone();
+    let show_in_folder_gid = content.click_show_in_folder_gid.clone();
     tauri::async_runtime::spawn(async move {
         handle
-            .wait_for_action_async(|action| {
-                if is_default_notification_action(action) {
-                    open_notification_target(&app, &target);
-                } else {
-                    log::debug!("notification:click-open-target ignored action={action:?}");
+            .wait_for_action_async(|action| match action {
+                action if is_default_notification_action(action) => {
+                    crate::tray::activate_main_window(&app, "notification-click");
+                    if let Some(target) = open_target.as_ref() {
+                        open_notification_target(&app, target);
+                    } else if click_show_task_list {
+                        show_notification_task_list(&app);
+                    }
                 }
-            })
-            .await;
-    });
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_click_show_task_list_handler(
-    app: tauri::AppHandle,
-    handle: notify_rust::NotificationHandle,
-) {
-    tauri::async_runtime::spawn(async move {
-        handle
-            .wait_for_action_async(|action| {
-                if is_default_notification_action(action) {
-                    show_notification_task_list(&app);
-                } else {
-                    log::debug!("notification:click-show-task-list ignored action={action:?}");
+                notify_rust::ActionResponse::Custom("open-file") => {
+                    if let Some(gid) = open_file_gid.as_deref() {
+                        crate::services::frontend_action::dispatch_frontend_action_with_payload(
+                            &app,
+                            crate::services::frontend_action::FrontendActionChannel::NotificationAction,
+                            crate::services::frontend_action::FrontendActionKind::OpenTaskFile,
+                            Some(gid.to_string()),
+                            "notification-click-open-file",
+                        );
+                    }
                 }
+                notify_rust::ActionResponse::Custom("show-in-folder") => {
+                    if let Some(gid) = show_in_folder_gid.as_deref() {
+                        crate::services::frontend_action::dispatch_frontend_action_with_payload(
+                            &app,
+                            crate::services::frontend_action::FrontendActionChannel::NotificationAction,
+                            crate::services::frontend_action::FrontendActionKind::ShowTaskInFolder,
+                            Some(gid.to_string()),
+                            "notification-click-show-in-folder",
+                        );
+                    }
+                }
+                other => log::debug!("notification:click-action ignored action={other:?}"),
             })
             .await;
     });
@@ -438,6 +460,18 @@ pub fn build_task_notification(
         locale,
         click_open_target: click_open_target_for_event(kind, event, config),
         click_show_task_list: false,
+        click_open_file_gid: matches!(
+            kind,
+            TaskNotificationKind::Complete | TaskNotificationKind::SharingComplete
+        )
+        .then(|| event.gid.trim().to_string())
+        .filter(|gid| !gid.is_empty()),
+        click_show_in_folder_gid: matches!(
+            kind,
+            TaskNotificationKind::Complete | TaskNotificationKind::SharingComplete
+        )
+        .then(|| event.gid.trim().to_string())
+        .filter(|gid| !gid.is_empty()),
     })
 }
 
@@ -479,6 +513,8 @@ pub fn build_task_start_notification(
         locale,
         click_open_target: None,
         click_show_task_list: config.open_task_list_on_start_notification_click,
+        click_open_file_gid: None,
+        click_show_in_folder_gid: None,
     })
 }
 
@@ -632,6 +668,8 @@ pub fn send_app_notification(
         locale: "frontend",
         click_open_target: None,
         click_show_task_list: false,
+        click_open_file_gid: None,
+        click_show_in_folder_gid: None,
     };
     send_native_notification(app, &content)
 }
@@ -761,21 +799,24 @@ fn send_platform_notification(
         .summary(&content.title)
         .body(&content.body);
 
-    if content.click_open_target.is_some() || content.click_show_task_list {
-        notification.action("default", "Open");
+    notification.action("default", "Open");
+    if content.click_open_file_gid.is_some() {
+        notification.action("open-file", "Open File");
+    }
+    if content.click_show_in_folder_gid.is_some() {
+        notification.action("show-in-folder", "Show in Folder");
     }
 
     let handle = notification.show().map_err(|error| error.to_string())?;
     let registry = app.state::<LinuxNotificationRegistry>();
-    let retention = if let Some(target) = content.click_open_target.clone() {
+    let has_actions = content.click_open_target.is_some()
+        || content.click_show_task_list
+        || content.click_open_file_gid.is_some()
+        || content.click_show_in_folder_gid.is_some();
+    let retention = if has_actions {
         let id = handle.id();
         let retention = registry.observe_unretained(id);
-        spawn_click_open_target_handler(app.clone(), target, handle);
-        retention
-    } else if content.click_show_task_list {
-        let id = handle.id();
-        let retention = registry.observe_unretained(id);
-        spawn_click_show_task_list_handler(app.clone(), handle);
+        spawn_linux_notification_action_handler(app.clone(), content, handle);
         retention
     } else {
         registry.retain(handle)
@@ -818,10 +859,6 @@ fn send_platform_notification(
     app: &tauri::AppHandle,
     content: &TaskNotificationContent,
 ) -> Result<NotificationDispatchResult, String> {
-    if content.click_open_target.is_none() && !content.click_show_task_list {
-        return show_default_platform_notification(app, content);
-    }
-
     show_windows_notification(app, content, None, None)?;
 
     Ok(NotificationDispatchResult::Submitted)
@@ -964,11 +1001,36 @@ fn build_windows_toast_xml(
         })
         .unwrap_or_default();
 
+    let mut actions = String::new();
+    if let Some(gid) = content.click_open_file_gid.as_deref() {
+        if let Some(url) = windows_task_action_url(WINDOWS_NOTIFICATION_OPEN_FILE_ACTION, gid) {
+            actions.push_str(&format!(
+                r#"<action content="Open File" arguments="{}" activationType="protocol"/>"#,
+                escape_windows_toast_xml(&url)
+            ));
+        }
+    }
+    if let Some(gid) = content.click_show_in_folder_gid.as_deref() {
+        if let Some(url) = windows_task_action_url(WINDOWS_NOTIFICATION_SHOW_IN_FOLDER_ACTION, gid)
+        {
+            actions.push_str(&format!(
+                r#"<action content="Show in Folder" arguments="{}" activationType="protocol"/>"#,
+                escape_windows_toast_xml(&url)
+            ));
+        }
+    }
+    let actions = if actions.is_empty() {
+        String::new()
+    } else {
+        format!("<actions>{actions}</actions>")
+    };
+
     format!(
-        r#"<toast duration="short"{}><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual></toast>"#,
+        r#"<toast duration="short"{}><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual>{}</toast>"#,
         activation,
         escape_windows_toast_xml(&content.title),
-        escape_windows_toast_xml(&content.body)
+        escape_windows_toast_xml(&content.body),
+        actions
     )
 }
 
@@ -978,24 +1040,31 @@ fn windows_notification_activation_url(
     action_secret: Option<&str>,
 ) -> Option<String> {
     if let Some(target) = content.click_open_target.as_ref() {
-        windows_open_folder_activation_url(target, action_secret?)
+        windows_open_folder_activation_url(target, action_secret)
     } else {
-        content
-            .click_show_task_list
-            .then(windows_show_task_list_activation_url)
+        Some(if content.click_show_task_list {
+            windows_show_task_list_activation_url()
+        } else {
+            format!("motrixnext://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}")
+        })
     }
 }
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_open_folder_activation_url(
     target: &TaskNotificationOpenTarget,
-    action_secret: &str,
+    action_secret: Option<&str>,
 ) -> Option<String> {
     let dir = target.dir.trim();
     if dir.is_empty() || dir.chars().count() > WINDOWS_NOTIFICATION_DIR_MAX_CHARS {
         return None;
     }
 
+    let Some(action_secret) = action_secret else {
+        return Some(format!(
+            "motrixnext://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}"
+        ));
+    };
     let signature = sign_notification_open_dir(action_secret, dir)?;
     let mut url = url::Url::parse("motrixnext://open-folder").ok()?;
     {
@@ -1106,7 +1175,7 @@ fn escape_windows_toast_xml(value: &str) -> String {
     escaped
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
 fn show_default_platform_notification(
     app: &tauri::AppHandle,
     content: &TaskNotificationContent,
@@ -1155,6 +1224,27 @@ pub(crate) fn notification_action_secret(app: &tauri::AppHandle) -> Option<Strin
                 .filter(|secret| !secret.is_empty())
                 .map(str::to_string)
         })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_task_action_url(action: &str, gid: &str) -> Option<String> {
+    let gid = gid.trim();
+    if gid.is_empty()
+        || gid.chars().count() > 128
+        || !gid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    let mut url = url::Url::parse(&format!(
+        "motrixnext://{WINDOWS_NOTIFICATION_TASK_ACTION_ROUTE}"
+    ))
+    .ok()?;
+    url.query_pairs_mut()
+        .append_pair("action", action)
+        .append_pair("gid", gid);
+    Some(url.to_string())
 }
 
 #[cfg(test)]
@@ -1489,6 +1579,8 @@ mod tests {
                 dir: "C:\\Downloads".to_string(),
             }),
             click_show_task_list: false,
+            click_open_file_gid: None,
+            click_show_in_folder_gid: None,
         };
 
         let xml = build_windows_toast_xml(&content, Some("test-secret"));
@@ -1510,11 +1602,13 @@ mod tests {
                 dir: "C:\\Downloads".to_string(),
             }),
             click_show_task_list: false,
+            click_open_file_gid: None,
+            click_show_in_folder_gid: None,
         };
 
         let xml = build_windows_toast_xml(&content, None);
 
-        assert!(!xml.contains(r#"activationType="protocol""#));
+        assert!(xml.contains(r#"launch="motrixnext://activate""#));
     }
 
     #[test]
@@ -1526,12 +1620,36 @@ mod tests {
             locale: "en-US",
             click_open_target: None,
             click_show_task_list: true,
+            click_open_file_gid: None,
+            click_show_in_folder_gid: None,
         };
 
         let xml = build_windows_toast_xml(&content, None);
 
         assert!(xml.contains(r#"activationType="protocol""#));
         assert!(xml.contains(r#"launch="motrixnext://show-task-list""#));
+    }
+
+    #[test]
+    fn windows_toast_xml_contains_completion_actions_for_gid() {
+        let content = TaskNotificationContent {
+            kind: TaskNotificationKind::Complete,
+            title: "Download Complete".to_string(),
+            body: "Saved: file.zip".to_string(),
+            locale: "en-US",
+            click_open_target: None,
+            click_show_task_list: false,
+            click_open_file_gid: Some("0123456789abcdef".to_string()),
+            click_show_in_folder_gid: Some("0123456789abcdef".to_string()),
+        };
+
+        let xml = build_windows_toast_xml(&content, None);
+
+        assert!(xml.contains(r#"content="Open File""#));
+        assert!(xml.contains(r#"content="Show in Folder""#));
+        assert!(xml.contains("action=open-file"));
+        assert!(xml.contains("action=show-in-folder"));
+        assert!(xml.contains("gid=0123456789abcdef"));
     }
 
     #[test]

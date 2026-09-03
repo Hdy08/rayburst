@@ -45,6 +45,12 @@ type PendingFrontendActionChannel = 'menu-event' | 'notification-action' | 'tray
 interface PendingFrontendAction {
   channel: PendingFrontendActionChannel
   action: string
+  payload?: string
+}
+
+interface NotificationActionPayload {
+  action: string
+  payload?: string
 }
 
 interface PortSwitchEvent {
@@ -109,6 +115,7 @@ interface AppEventsDeps {
   isExiting: Ref<boolean>
   handleExitConfirm: () => Promise<void>
   onAbout: () => void
+  onNotificationTaskAction?: (action: 'open-file' | 'show-in-folder', gid: string) => Promise<void>
 }
 
 interface AppEventsReturn {
@@ -527,20 +534,32 @@ export function useAppEvents(deps: AppEventsDeps): AppEventsReturn {
     }
   }
 
-  async function handleNotificationAction(action: string) {
+  async function handleNotificationAction(input: string | NotificationActionPayload) {
+    const action = typeof input === 'string' ? input : input.action
+    const payload = typeof input === 'string' ? undefined : input.payload
     switch (action) {
+      case 'activate':
+        await surfaceMainWindow()
+        break
       case 'show-task-list':
         await surfaceMainWindow()
         await router.push('/task/all').catch(() => {
           /* duplicate navigation */
         })
         break
+      case 'open-file':
+      case 'show-in-folder':
+        if (payload?.trim() && deps.onNotificationTaskAction) {
+          await surfaceMainWindow()
+          await deps.onNotificationTaskAction(action, payload.trim())
+        }
+        break
     }
   }
 
   async function setupNotificationActionListener() {
     return registerCleanup(
-      await listen<string>('notification-action', async (event) => {
+      await listen<string | NotificationActionPayload>('notification-action', async (event) => {
         await handleNotificationAction(event.payload)
       }),
     )
@@ -820,7 +839,11 @@ export function useAppEvents(deps: AppEventsDeps): AppEventsReturn {
           if (pendingAction.channel === 'menu-event') {
             await handleMenuAction(pendingAction.action)
           } else if (pendingAction.channel === 'notification-action') {
-            await handleNotificationAction(pendingAction.action)
+            await handleNotificationAction(
+              pendingAction.payload
+                ? { action: pendingAction.action, payload: pendingAction.payload }
+                : pendingAction.action,
+            )
           } else if (pendingAction.channel === 'tray-menu-action') {
             await handleTrayAction(pendingAction.action)
           }

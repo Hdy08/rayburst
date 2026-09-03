@@ -125,6 +125,7 @@ function createDeps() {
   const navDialog = {
     warning: vi.fn(),
   }
+  const onNotificationTaskAction = vi.fn().mockResolvedValue(undefined)
 
   const deps: UseAppEventsDeps = {
     t: (key) => key,
@@ -136,10 +137,11 @@ function createDeps() {
     showEngineOverlay,
     isExiting,
     handleExitConfirm: vi.fn().mockResolvedValue(undefined),
+    onNotificationTaskAction,
     onAbout: vi.fn(),
   }
 
-  return { deps, appStore, taskStore, message }
+  return { deps, appStore, taskStore, message, onNotificationTaskAction }
 }
 
 function mountComposable(deps: UseAppEventsDeps) {
@@ -496,6 +498,33 @@ describe('useAppEvents', () => {
     await eventCallbacks['notification-action']?.({ payload: 'show-task-list' })
 
     expect(routerPushMock).toHaveBeenCalledWith('/task/all')
+  })
+
+  it('dispatches a live notification task action with its GID payload', async () => {
+    const { deps, onNotificationTaskAction } = createDeps()
+    const { setupListeners } = mountComposable(deps)
+
+    await setupListeners()
+    await eventCallbacks['notification-action']?.({
+      payload: { action: 'open-file', payload: '0123456789abcdef' },
+    })
+
+    expect(onNotificationTaskAction).toHaveBeenCalledWith('open-file', '0123456789abcdef')
+  })
+
+  it('dispatches a pending show-in-folder action with its GID payload', async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'take_pending_frontend_actions') {
+        return [{ channel: 'notification-action', action: 'show-in-folder', payload: 'gid-1' }]
+      }
+      return []
+    })
+    const { deps, onNotificationTaskAction } = createDeps()
+    const { setupListeners } = mountComposable(deps)
+
+    await setupListeners()
+
+    expect(onNotificationTaskAction).toHaveBeenCalledWith('show-in-folder', 'gid-1')
   })
 
   it('continues routing external input when focusing the restored window fails', async () => {
