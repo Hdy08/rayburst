@@ -866,6 +866,7 @@ pub fn run() {
             commands::restart_http_api,
             commands::peek_pending_deep_links_silent,
             commands::peek_pending_external_inputs_silent,
+            commands::peek_pending_frontend_actions_silent,
             commands::take_pending_deep_links,
             commands::take_pending_external_inputs,
             commands::take_pending_frontend_actions,

@@ -550,7 +550,6 @@ export function useAppEvents(deps: AppEventsDeps): AppEventsReturn {
       case 'open-file':
       case 'show-in-folder':
         if (payload?.trim() && deps.onNotificationTaskAction) {
-          await surfaceMainWindow()
           await deps.onNotificationTaskAction(action, payload.trim())
         }
         break

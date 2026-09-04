@@ -9,8 +9,9 @@ const PENDING_FRONTEND_ACTION_LIMIT: usize = 32;
 /// Frontend actions waiting for a recreated WebView to finish booting.
 ///
 /// Lightweight mode destroys the main WebView while keeping native tray and
-/// menu callbacks alive. Any action that depends on a Vue listener must survive
-/// the gap between native window activation and listener registration.
+/// notification callbacks alive. Any action that depends on a Vue listener must
+/// survive the gap between native dispatch and listener registration. Actions
+/// that preserve window state recreate the WebView hidden.
 #[derive(Debug, Default)]
 struct PendingFrontendActions {
     queue: Vec<PendingFrontendAction>,
@@ -57,6 +58,12 @@ enum PendingActionEnqueueResult {
     Queued,
     Duplicate,
     ReplacedOldest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowDispatchMode {
+    Activate,
+    Preserve,
 }
 
 impl FrontendActionChannel {
@@ -117,6 +124,8 @@ pub struct PendingFrontendAction {
     action: FrontendActionKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     payload: Option<String>,
+    #[serde(skip)]
+    window_mode: WindowDispatchMode,
 }
 
 impl PendingFrontendAction {
@@ -125,6 +134,7 @@ impl PendingFrontendAction {
             channel,
             action,
             payload: None,
+            window_mode: WindowDispatchMode::Activate,
         }
     }
 
@@ -137,6 +147,20 @@ impl PendingFrontendAction {
             channel,
             action,
             payload: Some(payload),
+            window_mode: WindowDispatchMode::Activate,
+        }
+    }
+
+    fn preserving_window_with_payload(
+        channel: FrontendActionChannel,
+        action: FrontendActionKind,
+        payload: String,
+    ) -> Self {
+        Self {
+            channel,
+            action,
+            payload: Some(payload),
+            window_mode: WindowDispatchMode::Preserve,
         }
     }
 }
@@ -170,6 +194,20 @@ pub fn take_pending_frontend_actions(
     }
 }
 
+pub fn peek_pending_frontend_actions_silent(state: &PendingFrontendActionState) -> bool {
+    state
+        .0
+        .lock()
+        .map(|inner| {
+            !inner.queue.is_empty()
+                && inner
+                    .queue
+                    .iter()
+                    .all(|action| action.window_mode == WindowDispatchMode::Preserve)
+        })
+        .unwrap_or(false)
+}
+
 pub fn mark_frontend_actions_unready(app: &AppHandle) {
     if let Some(state) = app.try_state::<PendingFrontendActionState>() {
         state.set_frontend_ready(false);
@@ -192,17 +230,54 @@ pub fn dispatch_frontend_action_with_payload(
     payload: Option<String>,
     source: &'static str,
 ) {
+    dispatch_frontend_action_with_mode(
+        app,
+        channel,
+        action,
+        payload,
+        source,
+        WindowDispatchMode::Activate,
+    );
+}
+
+pub fn dispatch_frontend_action_with_payload_preserving_window(
+    app: &AppHandle,
+    channel: FrontendActionChannel,
+    action: FrontendActionKind,
+    payload: String,
+    source: &'static str,
+) {
+    dispatch_frontend_action_with_mode(
+        app,
+        channel,
+        action,
+        Some(payload),
+        source,
+        WindowDispatchMode::Preserve,
+    );
+}
+
+fn dispatch_frontend_action_with_mode(
+    app: &AppHandle,
+    channel: FrontendActionChannel,
+    action: FrontendActionKind,
+    payload: Option<String>,
+    source: &'static str,
+    window_mode: WindowDispatchMode,
+) {
     let window_was_alive = app.get_webview_window("main").is_some();
     let frontend_ready = is_frontend_ready(app);
 
     log::info!(
-        "frontend_action:dispatch source={source} channel={} action={} window_alive={window_was_alive} frontend_ready={frontend_ready}",
+        "frontend_action:dispatch source={source} channel={} action={} window_mode={window_mode:?} window_alive={window_was_alive} frontend_ready={frontend_ready}",
         channel.event_name(),
         action.as_str()
     );
 
     if window_was_alive && frontend_ready {
-        wake_main_window(app, source);
+        if window_mode == WindowDispatchMode::Activate {
+            wake_main_window(app, source, window_mode);
+        }
         let event_payload = payload
             .as_deref()
             .map(|value| serde_json::json!({ "action": action.as_str(), "payload": value }))
@@ -219,11 +294,17 @@ pub fn dispatch_frontend_action_with_payload(
         }
     }
 
-    let pending = payload
-        .map(|value| PendingFrontendAction::with_payload(channel, action, value))
-        .unwrap_or_else(|| PendingFrontendAction::new(channel, action));
+    let pending = match (payload, window_mode) {
+        (Some(value), WindowDispatchMode::Preserve) => {
+            PendingFrontendAction::preserving_window_with_payload(channel, action, value)
+        }
+        (Some(value), WindowDispatchMode::Activate) => {
+            PendingFrontendAction::with_payload(channel, action, value)
+        }
+        (None, _) => PendingFrontendAction::new(channel, action),
+    };
     if queue_pending_frontend_action(app, pending, source) {
-        schedule_main_window_wake(app, source);
+        schedule_main_window_wake(app, source, window_mode);
     }
 }
 
@@ -313,25 +394,31 @@ fn is_frontend_ready(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn schedule_main_window_wake(app: &AppHandle, source: &'static str) {
+fn schedule_main_window_wake(
+    app: &AppHandle,
+    source: &'static str,
+    window_mode: WindowDispatchMode,
+) {
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let app_for_main = app_for_task.clone();
         if let Err(e) = app_for_task.run_on_main_thread(move || {
-            wake_main_window(&app_for_main, source);
+            wake_main_window(&app_for_main, source, window_mode);
         }) {
             log::error!("frontend_action:wake-schedule-failed source={source} error={e}");
         }
     });
 }
 
-fn wake_main_window(app: &AppHandle, source: &'static str) {
-    log::debug!("frontend_action:wake-start source={source}");
-    if crate::tray::activate_main_window(app, source)
-        == crate::tray::WindowActivationOutcome::Activated
-    {
-        log::debug!("frontend_action:wake-done source={source}");
+fn wake_main_window(app: &AppHandle, source: &'static str, window_mode: WindowDispatchMode) {
+    log::debug!("frontend_action:wake-start source={source} window_mode={window_mode:?}");
+    let outcome = match window_mode {
+        WindowDispatchMode::Activate => crate::tray::activate_main_window(app, source),
+        WindowDispatchMode::Preserve => crate::tray::ensure_main_window(app, source),
+    };
+    if outcome == crate::tray::WindowActivationOutcome::Activated {
+        log::debug!("frontend_action:wake-done source={source} window_mode={window_mode:?}");
     } else {
         log::error!("frontend_action:wake-failed source={source}");
     }
@@ -340,9 +427,10 @@ fn wake_main_window(app: &AppHandle, source: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        enqueue_pending_frontend_action, take_pending_frontend_actions, FrontendActionChannel,
-        FrontendActionKind, PendingActionEnqueueResult, PendingFrontendAction,
-        PendingFrontendActionState, PendingFrontendActions, PENDING_FRONTEND_ACTION_LIMIT,
+        enqueue_pending_frontend_action, peek_pending_frontend_actions_silent,
+        take_pending_frontend_actions, FrontendActionChannel, FrontendActionKind,
+        PendingActionEnqueueResult, PendingFrontendAction, PendingFrontendActionState,
+        PendingFrontendActions, PENDING_FRONTEND_ACTION_LIMIT,
     };
 
     #[cfg(target_os = "macos")]
@@ -428,6 +516,41 @@ mod tests {
         );
         assert_eq!(pending.queue.len(), PENDING_FRONTEND_ACTION_LIMIT);
         assert_eq!(pending.queue.last(), Some(&replacement));
+    }
+
+    #[test]
+    fn only_window_preserving_pending_actions_keep_recreated_window_hidden() {
+        let state = PendingFrontendActionState::new();
+        {
+            let mut inner = state
+                .0
+                .lock()
+                .expect("pending frontend action state poisoned");
+            inner
+                .queue
+                .push(PendingFrontendAction::preserving_window_with_payload(
+                    FrontendActionChannel::NotificationAction,
+                    FrontendActionKind::OpenTaskFile,
+                    "gid-1".to_string(),
+                ));
+        }
+
+        assert!(peek_pending_frontend_actions_silent(&state));
+
+        {
+            let mut inner = state
+                .0
+                .lock()
+                .expect("pending frontend action state poisoned");
+            inner.queue.push(PendingFrontendAction::new(
+                FrontendActionChannel::TrayMenuAction,
+                FrontendActionKind::NewTask,
+            ));
+        }
+
+        assert!(!peek_pending_frontend_actions_silent(&state));
+        let _ = take_pending_frontend_actions(&state);
+        assert!(!peek_pending_frontend_actions_silent(&state));
     }
 
     #[test]

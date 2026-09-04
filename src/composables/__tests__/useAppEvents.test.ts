@@ -510,6 +510,9 @@ describe('useAppEvents', () => {
     })
 
     expect(onNotificationTaskAction).toHaveBeenCalledWith('open-file', '0123456789abcdef')
+    expect(windowApiMock.unminimize).not.toHaveBeenCalled()
+    expect(windowApiMock.show).not.toHaveBeenCalled()
+    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
   })
 
   it('dispatches a pending show-in-folder action with its GID payload', async () => {
@@ -525,6 +528,9 @@ describe('useAppEvents', () => {
     await setupListeners()
 
     expect(onNotificationTaskAction).toHaveBeenCalledWith('show-in-folder', 'gid-1')
+    expect(windowApiMock.unminimize).not.toHaveBeenCalled()
+    expect(windowApiMock.show).not.toHaveBeenCalled()
+    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
   })
 
   it('continues routing external input when focusing the restored window fails', async () => {

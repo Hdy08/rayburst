@@ -343,22 +343,22 @@ fn spawn_linux_notification_action_handler(
                 }
                 notify_rust::ActionResponse::Custom("open-file") => {
                     if let Some(gid) = open_file_gid.as_deref() {
-                        crate::services::frontend_action::dispatch_frontend_action_with_payload(
+                        crate::services::frontend_action::dispatch_frontend_action_with_payload_preserving_window(
                             &app,
                             crate::services::frontend_action::FrontendActionChannel::NotificationAction,
                             crate::services::frontend_action::FrontendActionKind::OpenTaskFile,
-                            Some(gid.to_string()),
+                            gid.to_string(),
                             "notification-click-open-file",
                         );
                     }
                 }
                 notify_rust::ActionResponse::Custom("show-in-folder") => {
                     if let Some(gid) = show_in_folder_gid.as_deref() {
-                        crate::services::frontend_action::dispatch_frontend_action_with_payload(
+                        crate::services::frontend_action::dispatch_frontend_action_with_payload_preserving_window(
                             &app,
                             crate::services::frontend_action::FrontendActionChannel::NotificationAction,
                             crate::services::frontend_action::FrontendActionKind::ShowTaskInFolder,
-                            Some(gid.to_string()),
+                            gid.to_string(),
                             "notification-click-show-in-folder",
                         );
                     }
