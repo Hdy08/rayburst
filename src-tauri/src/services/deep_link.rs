@@ -88,9 +88,9 @@ pub fn filter_external_input_args(args: &[String]) -> Vec<String> {
 /// Handles native app actions that should not be forwarded to the frontend.
 ///
 /// Windows notification-center clicks arrive as a protocol activation when the
-/// original in-process toast callback is no longer available. Revealing the
-/// downloaded item here keeps that path native and avoids waking the task UI as
-/// a download input.
+/// original in-process toast callback is no longer available. Notification
+/// bodies activate the main window; task file operations use dedicated action
+/// URLs and are handled separately below.
 #[cfg(target_os = "windows")]
 pub fn handle_native_action_args(app: &AppHandle, args: &[String], source: &'static str) -> bool {
     let mut handled = false;
@@ -104,18 +104,14 @@ pub fn handle_native_action_args(app: &AppHandle, args: &[String], source: &'sta
                 );
                 continue;
             };
-            let Some(target) = notification_open_target_from_url(arg, &secret) else {
+            if notification_open_target_from_url(arg, &secret).is_none() {
                 log::warn!(
                     "deep_link:native-action-rejected source={source} reason=invalid-signature"
                 );
                 continue;
-            };
+            }
             crate::tray::activate_main_window(app, source);
-            crate::services::notification::open_notification_target(app, &target);
-            log::info!(
-                "deep_link:native-action-open-target source={source} dir={:?}",
-                target.dir
-            );
+            log::info!("deep_link:native-action-activate source={source} legacy=open-folder");
         } else if is_notification_show_task_list_candidate(arg) {
             handled = true;
             if is_notification_show_task_list_url(arg) {

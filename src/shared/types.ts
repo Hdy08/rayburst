@@ -337,7 +337,7 @@ export interface AppConfig {
   notifyOnStart: boolean
   /** OS notification when a download completes or BT enters seeding (gated by taskNotification). */
   notifyOnComplete: boolean
-  /** Opens the task save folder when a completion notification is clicked. */
+  /** @deprecated Retained only to preserve existing persisted preferences. */
   openFolderOnNotificationClick: boolean
   /** Opens the task list when a download-start notification is clicked. */
   openTaskListOnStartNotificationClick: boolean

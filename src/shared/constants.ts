@@ -302,7 +302,7 @@ export const DEFAULT_APP_CONFIG = {
   taskNotification: true, // users expect download-complete notifications
   notifyOnStart: true,
   notifyOnComplete: true, // main value of OS notification: background completion alert
-  openFolderOnNotificationClick: false, // opt-in: clicking completion notifications opens save folder
+  openFolderOnNotificationClick: false, // legacy persisted value; completion actions now use explicit buttons
   openTaskListOnStartNotificationClick: false, // opt-in: clicking start notifications opens task list
   newTaskShowDownloading: true, // auto-navigate to downloads after adding task
   noConfirmBeforeDeleteTask: false, // require confirmation to prevent accidental deletion

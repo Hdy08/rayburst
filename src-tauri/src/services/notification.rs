@@ -261,60 +261,6 @@ fn notification_enabled(kind: TaskNotificationKind, config: &RuntimeConfig) -> b
     }
 }
 
-fn click_open_target_for_event(
-    kind: TaskNotificationKind,
-    event: &TaskEvent,
-    config: &RuntimeConfig,
-) -> Option<TaskNotificationOpenTarget> {
-    if !config.open_folder_on_notification_click {
-        return None;
-    }
-
-    match kind {
-        TaskNotificationKind::Complete | TaskNotificationKind::SharingComplete => {
-            notification_open_target_for_event(event)
-        }
-        TaskNotificationKind::Start | TaskNotificationKind::Error => None,
-    }
-}
-
-fn notification_open_target_for_event(event: &TaskEvent) -> Option<TaskNotificationOpenTarget> {
-    notification_open_dir_for_event(event).map(|dir| TaskNotificationOpenTarget { dir })
-}
-
-fn notification_open_dir_for_event(event: &TaskEvent) -> Option<String> {
-    let dir = event.dir.trim();
-    if !dir.is_empty() && looks_like_absolute_path(dir) {
-        return Some(dir.to_string());
-    }
-
-    let parent_dir = |path: &str| {
-        let path = path.trim();
-        looks_like_absolute_path(path)
-            .then(|| std::path::Path::new(path).parent())
-            .flatten()
-            .map(|parent| parent.to_string_lossy().to_string())
-            .filter(|parent| !parent.is_empty())
-    };
-
-    event
-        .files
-        .iter()
-        .filter(|file| file.selected.eq_ignore_ascii_case("true"))
-        .find_map(|file| parent_dir(&file.path))
-        .or_else(|| event.files.iter().find_map(|file| parent_dir(&file.path)))
-}
-
-fn looks_like_absolute_path(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    path.starts_with('/')
-        || path.starts_with('\\')
-        || (bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && (bytes[2] == b'\\' || bytes[2] == b'/'))
-}
-
 #[cfg(target_os = "linux")]
 fn is_default_notification_action(action: &notify_rust::ActionResponse<'_>) -> bool {
     matches!(action, notify_rust::ActionResponse::Custom("default"))
@@ -369,7 +315,7 @@ fn spawn_linux_notification_action_handler(
     });
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn open_notification_target(
     app: &tauri::AppHandle,
     target: &TaskNotificationOpenTarget,
@@ -458,7 +404,7 @@ pub fn build_task_notification(
         title,
         body,
         locale,
-        click_open_target: click_open_target_for_event(kind, event, config),
+        click_open_target: None,
         click_show_task_list: false,
         click_open_file_gid: matches!(
             kind,
@@ -1301,22 +1247,7 @@ mod tests {
         assert_eq!(content.body, "Saved: file.zip");
         assert_eq!(content.locale, "en-US");
         assert_eq!(content.click_open_target, None);
-    }
-
-    #[test]
-    fn complete_notification_includes_click_open_target_when_enabled() {
-        let mut config = cfg();
-        config.open_folder_on_notification_click = true;
-
-        let content = build_task_notification(events::TASK_COMPLETE, &event(), &config).unwrap();
-
-        assert_eq!(content.kind, TaskNotificationKind::Complete);
-        assert_eq!(
-            content.click_open_target,
-            Some(TaskNotificationOpenTarget {
-                dir: "/tmp".to_string(),
-            })
-        );
+        assert!(!content.click_show_task_list);
     }
 
     #[test]
@@ -1328,25 +1259,8 @@ mod tests {
         assert_eq!(content.kind, TaskNotificationKind::SharingComplete);
         assert_eq!(content.title, "BT Download Complete");
         assert_eq!(content.body, "Seeding: file.zip");
-    }
-
-    #[test]
-    fn sharing_complete_notification_includes_click_open_target_when_enabled() {
-        let mut ev = event();
-        ev.is_bt = true;
-        ev.sharing_kind = Some("bt");
-        let mut config = cfg();
-        config.open_folder_on_notification_click = true;
-
-        let content = build_task_notification(events::SHARING_COMPLETE, &ev, &config).unwrap();
-
-        assert_eq!(content.kind, TaskNotificationKind::SharingComplete);
-        assert_eq!(
-            content.click_open_target,
-            Some(TaskNotificationOpenTarget {
-                dir: "/tmp".to_string(),
-            })
-        );
+        assert_eq!(content.click_open_target, None);
+        assert!(!content.click_show_task_list);
     }
 
     #[test]
@@ -1384,50 +1298,6 @@ mod tests {
         assert_eq!(content.kind, TaskNotificationKind::Error);
         assert_eq!(content.title, "Download Failed");
         assert_eq!(content.body, "file.zip: Network error");
-        assert_eq!(content.click_open_target, None);
-    }
-
-    #[test]
-    fn error_notification_ignores_click_open_target_setting() {
-        let mut ev = event();
-        ev.error_message = Some("Network error".to_string());
-        let mut config = cfg();
-        config.open_folder_on_notification_click = true;
-
-        let content = build_task_notification(events::TASK_ERROR, &ev, &config).unwrap();
-
-        assert_eq!(content.kind, TaskNotificationKind::Error);
-        assert_eq!(content.click_open_target, None);
-    }
-
-    #[test]
-    fn complete_notification_uses_file_parent_when_dir_is_blank() {
-        let mut ev = event();
-        ev.dir = "  ".to_string();
-        let mut config = cfg();
-        config.open_folder_on_notification_click = true;
-
-        let content = build_task_notification(events::TASK_COMPLETE, &ev, &config).unwrap();
-
-        assert_eq!(content.kind, TaskNotificationKind::Complete);
-        assert_eq!(
-            content.click_open_target,
-            Some(TaskNotificationOpenTarget {
-                dir: "/tmp".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn complete_notification_rejects_relative_open_targets() {
-        let mut ev = event();
-        ev.dir = "relative/downloads".to_string();
-        ev.files[0].path = "relative/downloads/file.zip".to_string();
-        let mut config = cfg();
-        config.open_folder_on_notification_click = true;
-
-        let content = build_task_notification(events::TASK_COMPLETE, &ev, &config).unwrap();
-
         assert_eq!(content.click_open_target, None);
     }
 
@@ -1649,6 +1519,8 @@ mod tests {
 
         let xml = build_windows_toast_xml(&content, None);
 
+        assert!(xml.contains(r#"launch="motrixnext://activate""#));
+        assert!(!xml.contains("motrixnext://open-folder"));
         assert!(xml.contains(r#"content="Open File""#));
         assert!(xml.contains(r#"content="Show in Folder""#));
         assert!(xml.contains("motrixnext://task-action/open-file/0123456789abcdef"));

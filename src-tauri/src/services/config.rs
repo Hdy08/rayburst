@@ -60,9 +60,6 @@ pub struct RuntimeConfig {
     /// Whether completed downloads should trigger native system notifications.
     #[serde(default = "default_true")]
     pub notify_on_complete: bool,
-    /// Whether clicking completion notifications should open the task save folder.
-    #[serde(default)]
-    pub open_folder_on_notification_click: bool,
     /// Whether clicking download-start notifications should open the task list.
     #[serde(default)]
     pub open_task_list_on_start_notification_click: bool,
@@ -117,7 +114,6 @@ impl Default for RuntimeConfig {
             keep_awake: false,
             task_notification: true,
             notify_on_complete: true,
-            open_folder_on_notification_click: false,
             open_task_list_on_start_notification_click: false,
             notify_on_start: true,
             extension_api_port: default_extension_api_port(),
@@ -178,7 +174,6 @@ mod tests {
         assert!(!cfg.keep_awake); // default OFF — opt-in only
         assert!(cfg.task_notification); // default ON
         assert!(cfg.notify_on_complete); // default ON
-        assert!(!cfg.open_folder_on_notification_click); // default OFF
         assert!(!cfg.open_task_list_on_start_notification_click); // default OFF
         assert!(cfg.notify_on_start); // default ON
         assert!(!cfg.allow_remote_access); // default OFF
@@ -199,7 +194,6 @@ mod tests {
             "maxOverallUploadLimit": "512K",
             "taskNotification": false,
             "notifyOnComplete": false,
-            "openFolderOnNotificationClick": true,
             "openTaskListOnStartNotificationClick": true,
             "notifyOnStart": false,
             "traySpeedometer": true,
@@ -213,7 +207,8 @@ mod tests {
             "dir": "/downloads",
             "split": 16,
             "rpcListenPort": 29100,
-            "rpcSecret": "changeme"
+            "rpcSecret": "changeme",
+            "openFolderOnNotificationClick": true
         });
 
         let cfg: RuntimeConfig = serde_json::from_value(json).expect("deserialize");
@@ -235,7 +230,6 @@ mod tests {
         assert!(cfg.allow_remote_access);
         assert!(!cfg.task_notification);
         assert!(!cfg.notify_on_complete);
-        assert!(cfg.open_folder_on_notification_click);
         assert!(cfg.open_task_list_on_start_notification_click);
         assert!(!cfg.notify_on_start);
     }
@@ -256,7 +250,6 @@ mod tests {
         assert!(cfg.dock_badge_speed); // default true
         assert_eq!(cfg.speed_schedule_from, "00:00");
         assert_eq!(cfg.speed_schedule_to, "06:00");
-        assert!(!cfg.open_folder_on_notification_click);
         assert!(!cfg.open_task_list_on_start_notification_click);
     }
 
@@ -297,7 +290,6 @@ mod tests {
         let snap = state.snapshot().await;
         assert!(snap.speed_limit_enabled);
         assert!(snap.tray_speedometer);
-        assert!(snap.open_folder_on_notification_click);
         assert!(snap.open_task_list_on_start_notification_click);
         assert_eq!(snap.speed_schedule_from, "23:00");
         assert_eq!(snap.speed_schedule_to, "07:00");

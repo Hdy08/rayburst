@@ -515,11 +515,6 @@ onMounted(async () => {
             <PreferenceCheckboxGrid v-model:value="selectedNotificationTypes" :options="notificationTypeOptions" />
           </NFormItem>
           <NFormItem label=" ">
-            <NCheckbox v-model:checked="form.openFolderOnNotificationClick" :disabled="!form.notifyOnComplete">
-              {{ t('preferences.open-folder-on-notification-click') }}
-            </NCheckbox>
-          </NFormItem>
-          <NFormItem label=" ">
             <NCheckbox v-model:checked="form.openTaskListOnStartNotificationClick" :disabled="!form.notifyOnStart">
               {{ t('preferences.open-task-list-on-start-notification-click') }}
             </NCheckbox>
