@@ -784,6 +784,7 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
     unsafe {
         // Initialize COM (required for Shell APIs, idempotent).
         let _ = CoInitializeEx(std::ptr::null(), 0);
+        crate::windows_focus::allow_set_foreground_window_any("reveal-in-explorer");
         // Convert parent directory to ITEMIDLIST.
         let parent_pidl = ILCreateFromPathW(parent_wide.as_ptr());
         if parent_pidl.is_null() {
@@ -821,6 +822,10 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
         }
     }
 
+    if !crate::windows_focus::focus_file_manager_window_for_dir(parent, "reveal-in-explorer") {
+        log::warn!("reveal_in_explorer: failed to focus parent={parent:?}");
+    }
+
     Ok(())
 }
 
@@ -832,6 +837,7 @@ fn shell_execute_open(dir: &str) -> Result<(), AppError> {
 
     let dir_wide = to_wide(dir);
     let verb_wide = to_wide("explore");
+    crate::windows_focus::allow_set_foreground_window_any("shell-execute-open");
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(), // hwnd
@@ -846,6 +852,12 @@ fn shell_execute_open(dir: &str) -> Result<(), AppError> {
     if (result as isize) <= 32 {
         Err(AppError::Io(format!("ShellExecuteW failed for {dir:?}")))
     } else {
+        if !crate::windows_focus::focus_file_manager_window_for_dir(
+            Path::new(dir),
+            "shell-execute-open",
+        ) {
+            log::warn!("shell_execute_open: failed to focus dir={dir:?}");
+        }
         Ok(())
     }
 }
