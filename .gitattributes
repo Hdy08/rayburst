@@ -1,0 +1,5 @@
+# Keep Prettier-managed frontend files on LF across platforms.
+*.ts text eol=lf
+*.vue text eol=lf
+*.css text eol=lf
+*.json text eol=lf
