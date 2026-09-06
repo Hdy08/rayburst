@@ -212,7 +212,7 @@ fn is_notification_show_task_list_url(value: &str) -> bool {
     ) && url_has_no_query_or_fragment(value)
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn is_notification_show_task_list_candidate(value: &str) -> bool {
     motrix_action_from_url(value).as_deref() == Some(NOTIFICATION_SHOW_TASK_LIST_ACTION)
 }
@@ -223,7 +223,7 @@ fn is_notification_activate_url(value: &str) -> bool {
         && url_has_no_query_or_fragment(value)
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn is_notification_activate_candidate(value: &str) -> bool {
     motrix_action_from_url(value).as_deref() == Some(NOTIFICATION_ACTIVATE_ACTION)
 }
@@ -308,7 +308,7 @@ fn notification_task_action_from_url(
     Some((action, gid))
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn is_notification_task_action_url(value: &str) -> bool {
     url::Url::parse(value)
         .map(|parsed| {

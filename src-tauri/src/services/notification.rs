@@ -100,35 +100,6 @@ impl LinuxNotificationRegistry {
         }
     }
 
-    pub fn retain(&self, handle: notify_rust::NotificationHandle) -> LinuxNotificationRetention {
-        let id = handle.id();
-        let now = Instant::now();
-        let mut retained = self
-            .retained
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pruned_expired =
-            prune_expired_linux_notifications(&mut retained, now, LINUX_NOTIFICATION_RETENTION_TTL);
-
-        retained.push_back(RetainedLinuxNotification {
-            created_at: now,
-            _handle: handle,
-        });
-
-        let dropped_over_limit =
-            trim_linux_notifications_to_limit(&mut retained, LINUX_NOTIFICATION_RETENTION_LIMIT);
-
-        LinuxNotificationRetention {
-            retained: true,
-            id,
-            registry_size: retained.len(),
-            retention_limit: LINUX_NOTIFICATION_RETENTION_LIMIT,
-            ttl_secs: LINUX_NOTIFICATION_RETENTION_TTL.as_secs(),
-            pruned_expired,
-            dropped_over_limit,
-        }
-    }
-
     pub fn observe_unretained(&self, id: u32) -> LinuxNotificationRetention {
         let now = Instant::now();
         let mut retained = self
@@ -165,18 +136,6 @@ fn prune_expired_linux_notifications(
 ) -> usize {
     let original_len = retained.len();
     retained.retain(|notification| now.duration_since(notification.created_at) < ttl);
-    original_len - retained.len()
-}
-
-#[cfg(target_os = "linux")]
-fn trim_linux_notifications_to_limit(
-    retained: &mut VecDeque<RetainedLinuxNotification>,
-    limit: usize,
-) -> usize {
-    let original_len = retained.len();
-    while retained.len() > limit {
-        retained.pop_front();
-    }
     original_len - retained.len()
 }
 
@@ -1080,7 +1039,7 @@ fn decode_sha256_hex(value: &str) -> Option<[u8; 32]> {
     }
 
     let mut decoded = [0u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         decoded[index] = (decode_hex_nibble(pair[0])? << 4) | decode_hex_nibble(pair[1])?;
     }
     Some(decoded)
