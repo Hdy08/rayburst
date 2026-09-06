@@ -136,6 +136,7 @@ pub fn handle_native_action_args(app: &AppHandle, args: &[String], source: &'sta
         } else if is_notification_task_action_url(arg) {
             handled = true;
             if let Some((action, gid)) = notification_task_action_from_url(arg) {
+                crate::tray::cancel_pending_main_window_activation();
                 crate::services::frontend_action::dispatch_frontend_action_with_payload_preserving_window(
                     app,
                     crate::services::frontend_action::FrontendActionChannel::NotificationAction,

@@ -1,257 +1,210 @@
 use std::{
+    ffi::OsString,
+    os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
     time::Duration,
 };
 
+use windows::{
+    core::{IUnknown, Interface, VARIANT},
+    Win32::{
+        System::Com::{
+            CoAllowSetForegroundWindow, CoCreateInstance, CoTaskMemFree, IServiceProvider,
+            CLSCTX_LOCAL_SERVER,
+        },
+        UI::Shell::{
+            IFolderView, IPersistFolder2, IShellBrowser, IShellView, IShellWindows, IWebBrowser2,
+            SHGetPathFromIDListEx, SID_STopLevelBrowser, ShellWindows, GPFIDL_DEFAULT,
+            SVUIA_ACTIVATE_FOCUS,
+        },
+    },
+};
 use windows_sys::Win32::{
-    Foundation::HWND,
-    System::Threading::{AttachThreadInput, GetCurrentThreadId},
+    Foundation::{GetLastError, HWND},
+    System::Threading::GetCurrentThreadId,
     UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId,
-        IsIconic, SetForegroundWindow, SetWindowPos, ShowWindowAsync, SwitchToThisWindow,
-        HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
+        AllowSetForegroundWindow, FlashWindowEx, GetForegroundWindow, GetGUIThreadInfo,
+        GetWindowThreadProcessId, IsChild, IsIconic, SetForegroundWindow, ShowWindow,
+        ShowWindowAsync, FLASHWINFO, FLASHW_STOP, GUITHREADINFO, SW_RESTORE, SW_SHOW,
     },
 };
 
-const ASFW_ANY: u32 = u32::MAX;
 const EXPLORER_FOCUS_ATTEMPTS: usize = 8;
 const EXPLORER_FOCUS_RETRY_DELAY: Duration = Duration::from_millis(50);
 
-pub fn allow_set_foreground_window_any(source: &str) -> bool {
-    let ok = unsafe { AllowSetForegroundWindow(ASFW_ANY) != 0 };
-    log::debug!("windows-focus:allow-set-foreground source={source} ok={ok}");
-    ok
-}
-
-/// Activates a window using the synchronous Win32 path used by the working
-/// notification implementation. The caller must be handling a user-originated
-/// activation while the foreground permission is still available.
-pub fn force_foreground_window(hwnd: HWND, source: &str) -> bool {
-    if hwnd.is_null() {
-        log::warn!("windows-focus:foreground-failed source={source} reason=null-hwnd");
-        return false;
-    }
-
-    allow_set_foreground_window_any(source);
-
-    let foreground_before = unsafe { GetForegroundWindow() };
-    let current_thread = unsafe { GetCurrentThreadId() };
-    let target_thread = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
-    let foreground_thread = if foreground_before.is_null() {
+/// Preserve the COM notification's foreground permission for this process before
+/// returning to the shell. This grants no permission to unrelated processes.
+pub fn retain_notification_foreground_permission() -> bool {
+    let granted = unsafe { AllowSetForegroundWindow(std::process::id()) != 0 };
+    let error = if granted {
         0
     } else {
-        unsafe { GetWindowThreadProcessId(foreground_before, std::ptr::null_mut()) }
+        unsafe { GetLastError() }
     };
+    log::info!(
+        "windows-focus:notification-permission pid={} granted={granted} error={error}",
+        std::process::id()
+    );
+    granted
+}
 
-    let attached_foreground = attach_thread_input(current_thread, foreground_thread);
-    let attached_target = attach_thread_input(current_thread, target_thread);
-
-    let show_command = if unsafe { IsIconic(hwnd) != 0 } {
+/// Request foreground ownership without synthetic input or input-queue attachment.
+/// Content focus must be checked separately after the target view is activated.
+pub fn force_foreground_window(hwnd: HWND, source: &str) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    let before = unsafe { GetForegroundWindow() };
+    let show = if unsafe { IsIconic(hwnd) != 0 } {
         SW_RESTORE
     } else {
         SW_SHOW
     };
-    let _ = unsafe { ShowWindowAsync(hwnd, show_command) };
-    let _ = unsafe { BringWindowToTop(hwnd) };
-    let _ = unsafe { SetForegroundWindow(hwnd) };
-
-    // SetForegroundWindow can still be rejected by the foreground lock. These
-    // synchronous fallbacks mirror the proven a009 path without synthesizing
-    // keyboard input in the user's active application.
-    if unsafe { GetForegroundWindow() } != hwnd {
-        unsafe {
-            SwitchToThisWindow(hwnd, 1);
-        }
-        if unsafe { GetForegroundWindow() } != hwnd {
-            let _ = pulse_topmost(hwnd);
-            let _ = unsafe { SetForegroundWindow(hwnd) };
+    unsafe {
+        if GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) == GetCurrentThreadId() {
+            ShowWindow(hwnd, show);
+        } else {
+            ShowWindowAsync(hwnd, show);
         }
     }
-
-    detach_thread_input(current_thread, target_thread, attached_target);
-    detach_thread_input(current_thread, foreground_thread, attached_foreground);
-
-    let activated = unsafe { GetForegroundWindow() } == hwnd;
-    log::info!(
-        "windows-focus:foreground source={source} activated={activated} target_thread={target_thread} foreground_thread={foreground_thread}"
-    );
-    activated
+    let accepted = before == hwnd || unsafe { SetForegroundWindow(hwnd) != 0 };
+    let after = unsafe { GetForegroundWindow() };
+    let foreground = after == hwnd;
+    log::info!("windows-focus:foreground source={source} target={hwnd:?} before={before:?} after={after:?} accepted={accepted} foreground={foreground}");
+    foreground
 }
 
-/// Finds and activates the Explorer window currently displaying `dir`.
-///
-/// `SHOpenFolderAndSelectItems` opens/selects the item but does not guarantee
-/// that an already-existing Explorer window becomes the foreground window.
-/// The Shell COM enumeration below lets us target the exact directory without
-/// activating an unrelated file-manager window.
-pub fn focus_file_manager_window_for_dir(dir: &Path, source: &str) -> bool {
-    let target_key = normalized_path_key(dir);
-    for attempt in 0..EXPLORER_FOCUS_ATTEMPTS {
-        if let Some(hwnd_raw) = find_file_manager_window_for_dir(&target_key, source) {
-            let activated = force_foreground_window(hwnd_raw as HWND, source);
-            log::info!(
-                "windows-focus:explorer-focus source={source} activated={activated} attempt={} dir={dir:?}",
-                attempt + 1
-            );
-            return activated;
-        }
+pub fn foreground_input_focus_belongs_to(hwnd: HWND) -> bool {
+    if hwnd.is_null() || unsafe { GetForegroundWindow() } != hwnd {
+        return false;
+    }
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+    if unsafe { GetGUIThreadInfo(0, &mut info) } == 0 {
+        return false;
+    }
+    let belongs = |target: HWND| {
+        target == hwnd || (!target.is_null() && unsafe { IsChild(hwnd, target) != 0 })
+    };
+    belongs(info.hwndActive) && belongs(info.hwndFocus) && unsafe { GetForegroundWindow() } == hwnd
+}
 
+pub fn confirm_foreground_focus(hwnd: HWND, source: &str) -> bool {
+    let focused = foreground_input_focus_belongs_to(hwnd);
+    if focused {
+        let flash = FLASHWINFO {
+            cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+            hwnd,
+            dwFlags: FLASHW_STOP,
+            uCount: 0,
+            dwTimeout: 0,
+        };
+        unsafe { FlashWindowEx(&flash) };
+    }
+    log::info!("windows-focus:confirmed source={source} target={hwnd:?} focused={focused}");
+    focused
+}
+
+/// Called from the file-reveal worker. Reuse one STA and ShellWindows object
+/// for all retries. Never fall back to an unrelated folder.
+pub fn focus_file_manager_window_for_dir(dir: &Path, source: &str) -> bool {
+    let key = normalized_path_key(dir);
+    let result = (|| {
+        let _com = crate::windows_toast::Apartment::new()?;
+        focus_file_manager_on_sta(&key, source)
+    })();
+    match result {
+        Ok(focused) => focused,
+        Err(error) => {
+            log::warn!("windows-focus:explorer-failed source={source} error={error}");
+            false
+        }
+    }
+}
+
+fn focus_file_manager_on_sta(key: &str, source: &str) -> windows::core::Result<bool> {
+    let shell_windows: IShellWindows =
+        unsafe { CoCreateInstance(&ShellWindows, None::<&IUnknown>, CLSCTX_LOCAL_SERVER)? };
+    for attempt in 0..EXPLORER_FOCUS_ATTEMPTS {
+        if let Some(browser) = find_file_manager(&shell_windows, key)? {
+            let hwnd = unsafe { browser.HWND()? }.0 as HWND;
+            let view = matching_active_shell_view(&browser, key)?;
+            if view.is_some() && confirm_foreground_focus(hwnd, source) {
+                return Ok(true);
+            }
+            if let Some(view) = view {
+                force_foreground_window(hwnd, source);
+                let grant = unsafe { CoAllowSetForegroundWindow(&browser, None) };
+                log::debug!("windows-focus:explorer-permission source={source} result={grant:?}");
+                // Explorer restores its own content focus on the verified tab.
+                if let Err(error) = unsafe { view.UIActivate(SVUIA_ACTIVATE_FOCUS.0 as u32) } {
+                    log::debug!(
+                        "windows-focus:explorer-view-focus-failed source={source} error={error}"
+                    );
+                }
+                if confirm_foreground_focus(hwnd, source) {
+                    return Ok(true);
+                }
+            }
+        }
         if attempt + 1 < EXPLORER_FOCUS_ATTEMPTS {
             std::thread::sleep(EXPLORER_FOCUS_RETRY_DELAY);
         }
     }
-
-    log::warn!("windows-focus:explorer-focus-failed source={source} dir={dir:?}");
-    false
+    Ok(false)
 }
 
-fn attach_thread_input(current_thread: u32, other_thread: u32) -> bool {
-    if current_thread == 0 || other_thread == 0 || current_thread == other_thread {
-        return false;
+fn matching_active_shell_view(
+    browser: &IWebBrowser2,
+    key: &str,
+) -> windows::core::Result<Option<IShellView>> {
+    let provider = browser.cast::<IServiceProvider>()?;
+    let shell_browser: IShellBrowser = unsafe { provider.QueryService(&SID_STopLevelBrowser)? };
+    let view = unsafe { shell_browser.QueryActiveShellView()? };
+    let folder_view = view.cast::<IFolderView>()?;
+    let folder: IPersistFolder2 = unsafe { folder_view.GetFolder()? };
+    let pidl = unsafe { folder.GetCurFolder()? };
+    if pidl.is_null() {
+        return Ok(None);
     }
-    unsafe { AttachThreadInput(current_thread, other_thread, 1) != 0 }
+    let mut path = vec![0_u16; 32_768];
+    let converted = unsafe { SHGetPathFromIDListEx(pidl, &mut path, GPFIDL_DEFAULT) }.as_bool();
+    unsafe { CoTaskMemFree(Some(pidl.cast())) };
+    let matches = converted
+        && path
+            .iter()
+            .position(|value| *value == 0)
+            .is_some_and(|length| {
+                normalized_path_key(Path::new(&OsString::from_wide(&path[..length]))) == key
+            });
+    Ok(matches.then_some(view))
 }
 
-fn detach_thread_input(current_thread: u32, other_thread: u32, attached: bool) {
-    if attached {
-        unsafe {
-            AttachThreadInput(current_thread, other_thread, 0);
-        }
-    }
-}
-
-fn pulse_topmost(hwnd: HWND) -> bool {
-    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
-    let topmost_ok = unsafe { SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags) != 0 };
-    let notopmost_ok = unsafe { SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags) != 0 };
-    topmost_ok && notopmost_ok
-}
-
-fn find_file_manager_window_for_dir(target_key: &str, source: &str) -> Option<isize> {
-    let target_key = target_key.to_string();
-    let source_label = source.to_string();
-    let thread_source = source_label.clone();
-    std::thread::spawn(move || find_file_manager_window_for_dir_on_sta(&target_key, &thread_source))
-        .join()
-        .unwrap_or_else(|_| {
-            log::warn!("windows-focus:explorer-shellwindows-thread-panicked source={source_label}");
-            None
-        })
-}
-
-fn find_file_manager_window_for_dir_on_sta(target_key: &str, source: &str) -> Option<isize> {
-    use windows::{
-        core::{Interface, VARIANT},
-        Win32::{
-            Foundation::{S_FALSE, S_OK},
-            System::Com::{
-                CoAllowSetForegroundWindow, CoCreateInstance, CoInitializeEx, CLSCTX_ALL,
-                COINIT_APARTMENTTHREADED,
-            },
-            UI::Shell::{IShellWindows, IWebBrowser2, ShellWindows},
-        },
-    };
-
-    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    if hr.is_err() {
-        log::warn!("windows-focus:explorer-com-init-failed source={source} hresult={hr:?}");
-        return None;
-    }
-    let _com = ComApartment {
-        uninitialize: matches!(hr, S_OK | S_FALSE),
-    };
-
-    let shell_windows: IShellWindows = match unsafe {
-        CoCreateInstance(&ShellWindows, None::<&windows::core::IUnknown>, CLSCTX_ALL)
-    } {
-        Ok(shell_windows) => shell_windows,
-        Err(error) => {
-            log::warn!(
-                "windows-focus:explorer-shellwindows-create-failed source={source} error={error}"
-            );
-            return None;
-        }
-    };
-
-    if let Ok(shell_unknown) = shell_windows.cast::<windows::core::IUnknown>() {
-        let _ = unsafe { CoAllowSetForegroundWindow(&shell_unknown, None) };
-    }
-
-    let count = match unsafe { shell_windows.Count() } {
-        Ok(count) => count,
-        Err(error) => {
-            log::warn!(
-                "windows-focus:explorer-shellwindows-count-failed source={source} error={error}"
-            );
-            return None;
-        }
-    };
-
-    for index in 0..count {
-        let item_index = VARIANT::from(index);
-        let dispatch = match unsafe { shell_windows.Item(&item_index) } {
-            Ok(dispatch) => dispatch,
-            Err(error) => {
-                log::debug!(
-                    "windows-focus:explorer-shellwindows-item-failed source={source} index={index} error={error}"
-                );
-                continue;
-            }
-        };
-
-        let browser = match dispatch.cast::<IWebBrowser2>() {
-            Ok(browser) => browser,
-            Err(error) => {
-                log::debug!(
-                    "windows-focus:explorer-shellwindows-cast-failed source={source} index={index} error={error}"
-                );
-                continue;
-            }
-        };
-
-        let location_url = match unsafe { browser.LocationURL() }
+fn find_file_manager(
+    windows: &IShellWindows,
+    key: &str,
+) -> windows::core::Result<Option<IWebBrowser2>> {
+    let foreground = unsafe { GetForegroundWindow() };
+    let mut first_match = None;
+    for index in 0..unsafe { windows.Count()? } {
+        let browser = unsafe { windows.Item(&VARIANT::from(index)) }
+            .ok()
+            .and_then(|item| item.cast::<IWebBrowser2>().ok());
+        let Some(browser) = browser else { continue };
+        let location = unsafe { browser.LocationURL() }
             .ok()
             .and_then(|value| String::try_from(value).ok())
-        {
-            Some(location_url) => location_url,
-            None => continue,
-        };
-        let Some(location_path) = shell_location_url_to_path(&location_url) else {
-            continue;
-        };
-        if normalized_path_key(&location_path) != target_key {
-            continue;
-        }
-
-        if let Ok(browser_unknown) = browser.cast::<windows::core::IUnknown>() {
-            let _ = unsafe { CoAllowSetForegroundWindow(&browser_unknown, None) };
-        }
-        match unsafe { browser.HWND() } {
-            Ok(hwnd) if hwnd.0 != 0 => return Some(hwnd.0),
-            Ok(_) => log::warn!(
-                "windows-focus:explorer-shellwindows-null-hwnd source={source} url={location_url:?}"
-            ),
-            Err(error) => log::warn!(
-                "windows-focus:explorer-shellwindows-hwnd-failed source={source} url={location_url:?} error={error}"
-            ),
-        }
-    }
-
-    None
-}
-
-struct ComApartment {
-    uninitialize: bool,
-}
-
-impl Drop for ComApartment {
-    fn drop(&mut self) {
-        if self.uninitialize {
-            unsafe {
-                windows::Win32::System::Com::CoUninitialize();
+            .and_then(|value| shell_location_url_to_path(&value));
+        if location.is_some_and(|path| normalized_path_key(&path) == key) {
+            if unsafe { browser.HWND() }.is_ok_and(|hwnd| hwnd.0 as HWND == foreground) {
+                return Ok(Some(browser));
+            }
+            if first_match.is_none() {
+                first_match = Some(browser);
             }
         }
     }
+    Ok(first_match)
 }
 
 fn shell_location_url_to_path(location_url: &str) -> Option<PathBuf> {
@@ -275,4 +228,25 @@ fn normalized_path_key(path: &Path) -> String {
         value
     };
     value.to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_non_file_shell_locations() {
+        assert!(shell_location_url_to_path("https://example.com/folder").is_none());
+        assert!(shell_location_url_to_path("not a URL").is_none());
+        assert_eq!(
+            shell_location_url_to_path("file:///C:/Downloads/a%20b"),
+            Some(PathBuf::from(r"C:\Downloads\a b"))
+        );
+    }
+
+    #[test]
+    fn no_window_is_not_a_successful_activation() {
+        assert!(!force_foreground_window(std::ptr::null_mut(), "test"));
+        assert!(!confirm_foreground_focus(std::ptr::null_mut(), "test"));
+    }
 }

@@ -190,3 +190,19 @@ FunctionEnd
   ; and other major desktop applications.
   nsExec::ExecToLog 'ie4uinit.exe -show'
 !macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ; Keep notification activation during an update. On actual uninstall, remove
+  ; only keys still owned by this installation, after cancellation is no longer possible.
+  ${If} $UpdateMode != 1
+    ReadRegStr $R0 HKCU "Software\Classes\CLSID\{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}\LocalServer32" ""
+    ${If} $R0 == '$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --notification-activation'
+      ReadRegStr $R1 HKCU "Software\Classes\AppUserModelId\com.motrix.next" "CustomActivator"
+      ${If} $R1 == "{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}"
+        DeleteRegValue HKCU "Software\Classes\AppUserModelId\com.motrix.next" "CustomActivator"
+      ${EndIf}
+      DeleteRegKey HKCU "Software\Classes\CLSID\{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}\LocalServer32"
+      DeleteRegKey /ifempty HKCU "Software\Classes\CLSID\{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}"
+    ${EndIf}
+  ${EndIf}
+!macroend

@@ -49,8 +49,15 @@ pub fn peek_pending_external_inputs_silent(
 
 #[tauri::command]
 pub fn peek_pending_frontend_actions_silent(
+    app: tauri::AppHandle,
     state: tauri::State<'_, frontend_action::PendingFrontendActionState>,
 ) -> bool {
+    #[cfg(target_os = "windows")]
+    if crate::services::windows_notification_activation::startup_silent(&app) {
+        return true;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
     frontend_action::peek_pending_frontend_actions_silent(state.inner())
 }
 

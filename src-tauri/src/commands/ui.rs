@@ -6,6 +6,70 @@ use tauri::window::ProgressBarState;
 use tauri::AppHandle;
 use tauri::Manager;
 
+#[tauri::command]
+pub fn activate_app_window(app: AppHandle, startup: Option<bool>) -> Result<bool, AppError> {
+    #[cfg(target_os = "windows")]
+    if startup == Some(true) && windows_startup_should_hide(&app) {
+        if let Some(window) = app.get_webview_window("main") {
+            window
+                .hide()
+                .map_err(|error| AppError::Io(error.to_string()))?;
+        }
+        log::info!("window:startup-hidden");
+        return Ok(false);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = startup;
+    match crate::tray::activate_main_window(&app, "frontend-window-activation") {
+        crate::tray::WindowActivationOutcome::Activated => Ok(true),
+        crate::tray::WindowActivationOutcome::WindowUnavailable => {
+            Err(AppError::Io("Main window unavailable".into()))
+        }
+        _ => Ok(false),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_startup_should_hide(app: &AppHandle) -> bool {
+    use crate::services::{
+        deep_link, external_input, frontend_action, windows_notification_activation as activation,
+    };
+
+    // A notification may have arrived since the WebView read its startup flags.
+    // Decide on the UI thread so a stale frontend snapshot cannot hide it again.
+    let explicit_activation = activation::main_window_requested(app);
+    let pending_silent = activation::startup_silent(app)
+        || deep_link::peek_pending_deep_links_silent(&app.state())
+        || external_input::peek_pending_external_inputs_silent(&app.state())
+        || frontend_action::peek_pending_frontend_actions_silent(&app.state());
+    let autostart_silent = crate::commands::is_autostart_launch(app.state())
+        && crate::read_pref_bool(app, "autoHideWindow", false);
+    startup_should_hide(explicit_activation, pending_silent, autostart_silent)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn startup_should_hide(
+    explicit_activation: bool,
+    pending_silent: bool,
+    autostart_silent: bool,
+) -> bool {
+    !explicit_activation && (pending_silent || autostart_silent)
+}
+
+#[cfg(test)]
+mod window_activation_tests {
+    use super::startup_should_hide;
+
+    #[test]
+    fn explicit_activation_overrides_stale_startup_hide_flags() {
+        assert!(!startup_should_hide(true, true, true));
+        assert!(!startup_should_hide(true, true, false));
+        assert!(startup_should_hide(false, true, false));
+        assert!(startup_should_hide(false, false, true));
+        assert!(!startup_should_hide(false, false, false));
+    }
+}
+
 /// Updates the system tray title text.
 ///
 /// Supported platforms:

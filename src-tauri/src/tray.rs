@@ -116,6 +116,10 @@ pub fn get_or_create_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowActivationOutcome {
     Activated,
+    WindowReady,
+    NotActivated,
+    #[cfg(target_os = "windows")]
+    Pending,
     WindowUnavailable,
 }
 
@@ -123,7 +127,7 @@ pub fn ensure_main_window(app: &AppHandle, source: &'static str) -> WindowActiva
     log::info!("window:ensure-start source={source}");
     if get_or_create_main_window(app).is_some() {
         log::info!("window:ensure-done source={source}");
-        WindowActivationOutcome::Activated
+        WindowActivationOutcome::WindowReady
     } else {
         log::error!("window:ensure-failed source={source} reason=window-unavailable");
         WindowActivationOutcome::WindowUnavailable
@@ -132,6 +136,8 @@ pub fn ensure_main_window(app: &AppHandle, source: &'static str) -> WindowActiva
 
 pub fn activate_main_window(app: &AppHandle, source: &'static str) -> WindowActivationOutcome {
     log::info!("window:activate-start source={source}");
+    #[cfg(target_os = "windows")]
+    crate::services::windows_notification_activation::acknowledge_main_window_activation(app);
     #[cfg(target_os = "macos")]
     {
         use tauri::ActivationPolicy;
@@ -145,31 +151,87 @@ pub fn activate_main_window(app: &AppHandle, source: &'static str) -> WindowActi
         return WindowActivationOutcome::WindowUnavailable;
     };
 
-    if let Err(e) = window.unminimize() {
-        log::warn!("window:activate-unminimize-failed source={source} error={e}");
-    }
-    if let Err(e) = window.show() {
-        log::warn!("window:activate-show-failed source={source} error={e}");
-    }
-    if let Err(e) = window.set_focus() {
-        log::warn!("window:activate-focus-failed source={source} error={e}");
-    }
     #[cfg(target_os = "windows")]
-    match window.hwnd() {
-        Ok(hwnd) => {
-            let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
-            let activated = crate::windows_focus::force_foreground_window(hwnd, source);
-            if !activated {
-                log::warn!("window:activate-windows-foreground-failed source={source}");
+    {
+        let generation = cancel_pending_main_window_activation();
+        if focus_windows_webview(&window, source) {
+            return WindowActivationOutcome::Activated;
+        }
+        retry_main_window_activation(app, source, generation);
+        WindowActivationOutcome::Pending
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Err(e) = window.unminimize() {
+            log::warn!("window:activate-unminimize-failed source={source} error={e}");
+        }
+        if let Err(e) = window.show() {
+            log::warn!("window:activate-show-failed source={source} error={e}");
+        }
+        if let Err(e) = window.set_focus() {
+            log::warn!("window:activate-focus-failed source={source} error={e}");
+            return WindowActivationOutcome::NotActivated;
+        }
+        WindowActivationOutcome::Activated
+    }
+}
+
+#[cfg(target_os = "windows")]
+static MAIN_WINDOW_ACTIVATION_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(target_os = "windows")]
+pub fn cancel_pending_main_window_activation() -> u64 {
+    MAIN_WINDOW_ACTIVATION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
+}
+
+#[cfg(target_os = "windows")]
+fn focus_windows_webview(window: &tauri::WebviewWindow, source: &str) -> bool {
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    if !crate::windows_focus::force_foreground_window(hwnd, source) {
+        return false;
+    }
+    // Focus the content only after obtaining real foreground ownership. Tao's
+    // native window set_focus fallback can synthesize Alt, so do not call it.
+    if let Err(error) = window.as_ref().set_focus() {
+        log::warn!("window:activate-webview-focus-failed source={source} error={error}");
+        return false;
+    }
+    crate::windows_focus::confirm_foreground_focus(hwnd, source)
+}
+
+#[cfg(target_os = "windows")]
+fn retry_main_window_activation(app: &AppHandle, source: &'static str, generation: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..7 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let handle = app.clone();
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            if let Err(error) = app.run_on_main_thread(move || {
+                let done = MAIN_WINDOW_ACTIVATION_GENERATION
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != generation
+                    || handle
+                        .get_webview_window("main")
+                        .is_none_or(|window| focus_windows_webview(&window, source));
+                let _ = sender.send(done);
+            }) {
+                log::warn!("window:activate-retry-schedule-failed source={source} error={error}");
+                return;
+            }
+            if receiver.await.unwrap_or(true) {
+                return;
             }
         }
-        Err(e) => {
-            log::warn!("window:activate-hwnd-failed source={source} error={e}");
-        }
-    }
-
-    log::info!("window:activate-done source={source}");
-    WindowActivationOutcome::Activated
+        log::warn!(
+            "window:activate-failed source={source} outcome={:?}",
+            WindowActivationOutcome::NotActivated
+        );
+    });
 }
 
 pub fn setup_tray(app: &AppHandle) -> Result<TrayMenuState, Box<dyn std::error::Error>> {

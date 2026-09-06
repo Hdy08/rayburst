@@ -80,7 +80,7 @@ const isExiting = ref(false)
 const rememberChoice = ref(false)
 const pendingTrayHide = ref(false)
 const isMaximized = ref(false)
-const { platform: currentPlatform, isMac } = usePlatform()
+const { platform: currentPlatform, isMac, isWindows } = usePlatform()
 const showEngineOverlay = ref(false)
 const taskPaginationTab = computed(() =>
   taskStore.currentList === 'stopped' ? 'stopped' : taskStore.currentList === 'all' ? 'all' : 'active',
@@ -685,7 +685,9 @@ onMounted(async () => {
       'MainLayout.windowVisibility',
       `autostart=${isAutostart} autoHide=${autoHide} silentDeepLinks=${silentPendingDeepLinks} silentExternalInputs=${silentPendingExternalInputs} silentFrontendActions=${silentPendingFrontendActions} -> shouldHide=${shouldHide}`,
     )
-    if (!shouldHide) {
+    if (isWindows.value) {
+      await invoke<boolean>('activate_app_window', { startup: true })
+    } else if (!shouldHide) {
       const appWindow = getCurrentWindow()
       await appWindow.show()
       await appWindow.setFocus()

@@ -27,6 +27,8 @@ pub mod port_guard;
 pub mod power;
 pub mod speed;
 pub mod stat;
+#[cfg(target_os = "windows")]
+pub mod windows_notification_activation;
 
 use crate::aria2::client::Aria2State;
 use crate::engine::{non_hot_reloadable_keys, supported_engine_keys};

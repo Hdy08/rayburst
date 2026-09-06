@@ -417,10 +417,14 @@ fn wake_main_window(app: &AppHandle, source: &'static str, window_mode: WindowDi
         WindowDispatchMode::Activate => crate::tray::activate_main_window(app, source),
         WindowDispatchMode::Preserve => crate::tray::ensure_main_window(app, source),
     };
-    if outcome == crate::tray::WindowActivationOutcome::Activated {
+    if matches!(
+        outcome,
+        crate::tray::WindowActivationOutcome::Activated
+            | crate::tray::WindowActivationOutcome::WindowReady
+    ) {
         log::debug!("frontend_action:wake-done source={source} window_mode={window_mode:?}");
     } else {
-        log::error!("frontend_action:wake-failed source={source}");
+        log::debug!("frontend_action:wake-incomplete source={source} outcome={outcome:?}");
     }
 }
 

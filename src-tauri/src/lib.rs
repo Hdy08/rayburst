@@ -13,6 +13,8 @@ mod tray;
 mod upnp;
 #[cfg(target_os = "windows")]
 mod windows_focus;
+#[cfg(target_os = "windows")]
+mod windows_toast;
 
 // Re-export the Windows elevation entry point at the crate root so that
 // main.rs can call it before Tauri initialises.  The `commands` module
@@ -171,6 +173,10 @@ fn save_window_state_before_lightweight_destroy(app: &tauri::AppHandle) {
 /// Shared by `on_window_event(CloseRequested)` and `on_menu_event("close-window")`
 /// to keep the two close paths consistent.
 pub(crate) fn handle_minimize_to_tray(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    tray::cancel_pending_main_window_activation();
+    #[cfg(target_os = "windows")]
+    services::windows_notification_activation::clear_main_window_request(app);
     // End the cold-start phase on the first window dismissal.
     // After this point, is_autostart_launch() returns false so that
     // window recreations in lightweight mode show the window instead
@@ -248,6 +254,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(services::deep_link::PendingDeepLinkState::new());
     app.manage(services::external_input::PendingExternalInputState::new());
     app.manage(services::frontend_action::PendingFrontendActionState::new());
+
+    #[cfg(target_os = "windows")]
+    services::windows_notification_activation::setup(handle);
 
     #[cfg(target_os = "windows")]
     {
@@ -513,6 +522,8 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             }
         }
         tauri::RunEvent::Exit => {
+            #[cfg(target_os = "windows")]
+            services::windows_notification_activation::shutdown();
             log::info!("app:exit — saving session, stopping engine and UPnP");
 
             // ── Clear completed download records on exit ────────────
@@ -731,6 +742,12 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // COM supplies the real action to the registered activator. A launch
+            // marker alone must never show Motrix for a file/folder button.
+            #[cfg(target_os = "windows")]
+            if services::windows_notification_activation::is_notification_launch(&argv) {
+                return;
+            }
             // Handle protocol activations synchronously in the single-instance
             // callback. Deferring these actions loses the notification's
             // short-lived Windows foreground permission before activation runs.
@@ -818,6 +835,7 @@ pub fn run() {
             commands::factory_reset,
             commands::clear_session_file,
             commands::update_tray_title,
+            commands::activate_app_window,
             commands::update_tray_menu_labels,
             commands::update_menu_labels,
             commands::update_progress_bar,

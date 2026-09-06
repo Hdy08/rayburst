@@ -717,9 +717,31 @@ pub(crate) fn normalize_path(raw: &str) -> String {
 ///
 /// Delegates to `tauri_plugin_opener::reveal_item_in_dir` (no UNC bug on these
 /// platforms — macOS uses `NSWorkspace`, Linux uses D-Bus FileManager1).
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn show_item_in_dir(path: String) -> Result<(), AppError> {
-    let normalized = normalize_path(&path);
+    reveal_normalized_path(&path)
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub async fn show_item_in_dir(path: String) -> Result<(), AppError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    // Shell COM operations may wait for Explorer. Keep them off the Tauri UI
+    // thread and use one fresh apartment for opening, matching and focusing.
+    std::thread::Builder::new()
+        .name("file-reveal".into())
+        .spawn(move || {
+            let _ = sender.send(reveal_normalized_path(&path));
+        })
+        .map_err(|error| AppError::Io(format!("Failed to start file reveal: {error}")))?;
+    receiver
+        .await
+        .map_err(|error| AppError::Io(format!("File reveal interrupted: {error}")))?
+}
+
+fn reveal_normalized_path(path: &str) -> Result<(), AppError> {
+    let normalized = normalize_path(path);
     log::debug!("show_item_in_dir: original={path:?} normalized={normalized:?}");
     reveal_in_explorer(&normalized)
 }
@@ -741,9 +763,10 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
     use std::path::PathBuf;
     use windows_sys::Win32::{
         Foundation::ERROR_FILE_NOT_FOUND,
-        System::Com::CoInitializeEx,
         UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems},
     };
+    let _com = crate::windows_toast::Apartment::new()
+        .map_err(|error| AppError::Io(format!("Shell COM initialization failed: {error}")))?;
 
     // Step 1: Best-effort canonicalization.
     // `dunce::canonicalize` resolves symlinks and strips `\\?\` for local drives.
@@ -782,9 +805,6 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
     let file_wide = to_wide(fixed.to_string_lossy().as_ref());
 
     unsafe {
-        // Initialize COM (required for Shell APIs, idempotent).
-        let _ = CoInitializeEx(std::ptr::null(), 0);
-        crate::windows_focus::allow_set_foreground_window_any("reveal-in-explorer");
         // Convert parent directory to ITEMIDLIST.
         let parent_pidl = ILCreateFromPathW(parent_wide.as_ptr());
         if parent_pidl.is_null() {
@@ -806,7 +826,7 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
         // Electron-style fallback: on ERROR_FILE_NOT_FOUND, use ShellExecuteW.
         // "On some systems, the above call mysteriously fails with 'file not found'
         //  even though the file is there." — Electron source
-        if result != 0 && (result as u32) == ERROR_FILE_NOT_FOUND {
+        if result as u32 == (0x80070000 | ERROR_FILE_NOT_FOUND) {
             ILFree(file_pidl);
             ILFree(parent_pidl);
             return shell_execute_open(parent.to_string_lossy().as_ref());
@@ -837,7 +857,6 @@ fn shell_execute_open(dir: &str) -> Result<(), AppError> {
 
     let dir_wide = to_wide(dir);
     let verb_wide = to_wide("explore");
-    crate::windows_focus::allow_set_foreground_window_any("shell-execute-open");
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(), // hwnd

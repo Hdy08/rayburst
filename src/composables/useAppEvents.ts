@@ -19,6 +19,7 @@ import { getErrorMessage } from '@shared/utils/errorMessage'
 import { isMotrixNewTaskLink } from '@shared/utils/motrixDeepLink'
 import type { ExternalDownloadInput, TaskStartNotificationTask } from '@shared/types'
 import { handleTaskStart } from '@/composables/useTaskNotifyHandlers'
+import { usePlatform } from '@/composables/usePlatform'
 import { onUnmounted, watch, type Ref, type WatchStopHandle } from 'vue'
 
 interface DeepLinkHandlingResult {
@@ -535,14 +536,22 @@ export function useAppEvents(deps: AppEventsDeps): AppEventsReturn {
   }
 
   async function handleNotificationAction(input: string | NotificationActionPayload) {
+    const surfaceNotificationWindow = async () => {
+      if (usePlatform().isWindows.value) {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke<boolean>('activate_app_window')
+      } else {
+        await surfaceMainWindow()
+      }
+    }
     const action = typeof input === 'string' ? input : input.action
     const payload = typeof input === 'string' ? undefined : input.payload
     switch (action) {
       case 'activate':
-        await surfaceMainWindow()
+        await surfaceNotificationWindow()
         break
       case 'show-task-list':
-        await surfaceMainWindow()
+        await surfaceNotificationWindow()
         await router.push('/task/all').catch(() => {
           /* duplicate navigation */
         })

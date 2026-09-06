@@ -10,6 +10,9 @@ const routerBeforeEachMock = vi.fn()
 const dragDropListenerMock = vi.fn()
 const openDialogMock = vi.fn()
 const openUrlMock = vi.fn()
+const platformMock = vi.hoisted(() => ({ isWindows: { value: false } }))
+
+vi.mock('@/composables/usePlatform', () => ({ usePlatform: () => platformMock }))
 const windowApiMock = vi.hoisted(() => ({
   unminimize: vi.fn(),
   show: vi.fn(),
@@ -165,6 +168,7 @@ function mountComposable(deps: UseAppEventsDeps) {
 
 describe('useAppEvents', () => {
   beforeEach(() => {
+    platformMock.isWindows.value = false
     vi.clearAllMocks()
     eventUnlisteners = []
     eventCallbacks = {}
@@ -498,6 +502,30 @@ describe('useAppEvents', () => {
     await eventCallbacks['notification-action']?.({ payload: 'show-task-list' })
 
     expect(routerPushMock).toHaveBeenCalledWith('/task/all')
+  })
+
+  it.each(['activate', 'show-task-list'])('uses native Windows activation for notification %s', async (action) => {
+    platformMock.isWindows.value = true
+    const { deps } = createDeps()
+    const { setupListeners } = mountComposable(deps)
+    await setupListeners()
+    await eventCallbacks['notification-action']?.({ payload: action })
+    expect(invokeMock).toHaveBeenCalledWith('activate_app_window')
+    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
+    expect(windowApiMock.show).not.toHaveBeenCalled()
+    if (action === 'show-task-list') expect(routerPushMock).toHaveBeenCalledWith('/task/all')
+  })
+
+  it.each(['open-file', 'show-in-folder'])('never activates Motrix for Windows notification %s', async (action) => {
+    platformMock.isWindows.value = true
+    const { deps, onNotificationTaskAction } = createDeps()
+    const { setupListeners } = mountComposable(deps)
+    await setupListeners()
+    await eventCallbacks['notification-action']?.({ payload: { action, payload: 'gid-1' } })
+    expect(onNotificationTaskAction).toHaveBeenCalledWith(action, 'gid-1')
+    expect(invokeMock).not.toHaveBeenCalledWith('activate_app_window')
+    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
+    expect(windowApiMock.show).not.toHaveBeenCalled()
   })
 
   it('dispatches a live notification task action with its GID payload', async () => {

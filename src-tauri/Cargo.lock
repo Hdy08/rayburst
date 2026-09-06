@@ -3237,6 +3237,7 @@ dependencies = [
  "url",
  "urlencoding",
  "windows 0.56.0",
+ "windows-core 0.56.0",
  "windows-sys 0.59.0",
  "winreg 0.56.0",
  "zip 2.4.2",

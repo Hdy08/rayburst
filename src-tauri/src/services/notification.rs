@@ -920,6 +920,7 @@ fn build_windows_toast_notification(
         .LoadXml(&HSTRING::from(build_windows_toast_xml(
             content,
             action_secret.as_deref(),
+            super::windows_notification_activation::is_registered(app),
         )))
         .map_err(|error| format!("{error:?}"))?;
     ToastNotification::CreateToastNotification(&toast_xml).map_err(|error| format!("{error:?}"))
@@ -929,11 +930,17 @@ fn build_windows_toast_notification(
 fn build_windows_toast_xml(
     content: &TaskNotificationContent,
     action_secret: Option<&str>,
+    native_activation: bool,
 ) -> String {
+    let activation_type = if native_activation {
+        "foreground"
+    } else {
+        "protocol"
+    };
     let activation = windows_notification_activation_url(content, action_secret)
         .map(|url| {
             format!(
-                r#" activationType="protocol" launch="{}""#,
+                r#" activationType="{activation_type}" launch="{}""#,
                 escape_windows_toast_xml(&url)
             )
         })
@@ -944,7 +951,7 @@ fn build_windows_toast_xml(
     if let Some(gid) = content.click_open_file_gid.as_deref() {
         if let Some(url) = windows_task_action_url(WINDOWS_NOTIFICATION_OPEN_FILE_ACTION, gid) {
             actions.push_str(&format!(
-                r#"<action content="{}" arguments="{}" activationType="protocol"/>"#,
+                r#"<action content="{}" arguments="{}" activationType="{activation_type}"/>"#,
                 escape_windows_toast_xml(texts.open_file_action),
                 escape_windows_toast_xml(&url)
             ));
@@ -954,7 +961,7 @@ fn build_windows_toast_xml(
         if let Some(url) = windows_task_action_url(WINDOWS_NOTIFICATION_SHOW_IN_FOLDER_ACTION, gid)
         {
             actions.push_str(&format!(
-                r#"<action content="{}" arguments="{}" activationType="protocol"/>"#,
+                r#"<action content="{}" arguments="{}" activationType="{activation_type}"/>"#,
                 escape_windows_toast_xml(texts.show_in_folder_action),
                 escape_windows_toast_xml(&url)
             ));
@@ -1137,6 +1144,9 @@ fn show_default_platform_notification(
 
 #[cfg(target_os = "windows")]
 fn windows_notification_app_id(app: &tauri::AppHandle) -> String {
+    if super::windows_notification_activation::is_registered(app) {
+        return crate::windows_toast::Identity::for_app().app_id;
+    }
     let identifier = app.config().identifier.clone();
     let Ok(exe) = std::env::current_exe() else {
         return identifier;
@@ -1457,7 +1467,7 @@ mod tests {
             click_show_in_folder_gid: None,
         };
 
-        let xml = build_windows_toast_xml(&content, Some("test-secret"));
+        let xml = build_windows_toast_xml(&content, Some("test-secret"), false);
 
         assert!(xml.contains(r#"activationType="protocol""#));
         assert!(xml.contains(r#"launch="motrixnext://open-folder?dir=C%3A%5CDownloads&amp;sig="#));
@@ -1480,7 +1490,7 @@ mod tests {
             click_show_in_folder_gid: None,
         };
 
-        let xml = build_windows_toast_xml(&content, None);
+        let xml = build_windows_toast_xml(&content, None, true);
 
         assert!(xml.contains(r#"launch="motrixnext://activate""#));
     }
@@ -1498,9 +1508,9 @@ mod tests {
             click_show_in_folder_gid: None,
         };
 
-        let xml = build_windows_toast_xml(&content, None);
+        let xml = build_windows_toast_xml(&content, None, true);
 
-        assert!(xml.contains(r#"activationType="protocol""#));
+        assert!(xml.contains(r#"activationType="foreground""#));
         assert!(xml.contains(r#"launch="motrixnext://show-task-list""#));
     }
 
@@ -1517,7 +1527,7 @@ mod tests {
             click_show_in_folder_gid: Some("0123456789abcdef".to_string()),
         };
 
-        let xml = build_windows_toast_xml(&content, None);
+        let xml = build_windows_toast_xml(&content, None, true);
 
         assert!(xml.contains(r#"launch="motrixnext://activate""#));
         assert!(!xml.contains("motrixnext://open-folder"));
@@ -1525,6 +1535,8 @@ mod tests {
         assert!(xml.contains(r#"content="Show in Folder""#));
         assert!(xml.contains("motrixnext://task-action/open-file/0123456789abcdef"));
         assert!(xml.contains("motrixnext://task-action/show-in-folder/0123456789abcdef"));
+        assert_eq!(xml.matches(r#"activationType="foreground""#).count(), 3);
+        assert!(!xml.contains(r#"activationType="protocol""#));
     }
 
     #[test]
@@ -1540,7 +1552,7 @@ mod tests {
             click_show_in_folder_gid: Some("g1".to_string()),
         };
 
-        let xml = build_windows_toast_xml(&content, None);
+        let xml = build_windows_toast_xml(&content, None, true);
 
         assert!(xml.contains(r#"content="打开文件""#));
         assert!(xml.contains(r#"content="在文件夹中显示""#));
