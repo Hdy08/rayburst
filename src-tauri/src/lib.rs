@@ -198,7 +198,9 @@ pub(crate) fn handle_minimize_to_tray(app: &tauri::AppHandle, window: &tauri::We
         let _ = window.destroy();
     } else {
         log::info!("tray:hide label={}", window.label());
-        let _ = window.hide();
+        if let Err(error) = window.hide() {
+            log::warn!("tray:hide-failed label={} error={error}", window.label());
+        }
     }
 
     #[cfg(target_os = "macos")]

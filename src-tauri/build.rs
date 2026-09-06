@@ -1,6 +1,12 @@
 fn main() {
     tauri_build::build();
 
+    // Native window tests reuse Tauri's generated Common Controls v6 manifest.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let out_dir = std::env::var("OUT_DIR").expect("Cargo output directory");
+        println!("cargo:rustc-link-search=native={out_dir}");
+    }
+
     // On macOS, clear quarantine flags from sidecar binaries so they can execute.
     // This runs AFTER tauri_build::build() which copies sidecars into target/.
     #[cfg(target_os = "macos")]

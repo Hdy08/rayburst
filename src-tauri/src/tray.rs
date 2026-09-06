@@ -154,11 +154,21 @@ pub fn activate_main_window(app: &AppHandle, source: &'static str) -> WindowActi
     #[cfg(target_os = "windows")]
     {
         let generation = cancel_pending_main_window_activation();
-        if focus_windows_webview(&window, source) {
-            return WindowActivationOutcome::Activated;
+        // Native ShowWindow bypasses Tao's cached VISIBLE flag. Always show
+        // through Tauri, even if the HWND already appears visible to Windows.
+        if let Err(error) = window.show() {
+            log::warn!("window:activate-show-failed source={source} error={error}");
+            return WindowActivationOutcome::NotActivated;
         }
-        retry_main_window_activation(app, source, generation);
-        WindowActivationOutcome::Pending
+        if let Err(error) = window.unminimize() {
+            log::warn!("window:activate-unminimize-failed source={source} error={error}");
+            return WindowActivationOutcome::NotActivated;
+        }
+        let outcome = focus_windows_webview(&window, source);
+        if outcome == WindowActivationOutcome::Pending {
+            retry_main_window_activation(app, source, generation);
+        }
+        outcome
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -186,21 +196,29 @@ pub fn cancel_pending_main_window_activation() -> u64 {
 }
 
 #[cfg(target_os = "windows")]
-fn focus_windows_webview(window: &tauri::WebviewWindow, source: &str) -> bool {
+fn focus_windows_webview(window: &tauri::WebviewWindow, source: &str) -> WindowActivationOutcome {
+    // A focus retry must never undo a subsequent hide or minimize operation.
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return WindowActivationOutcome::NotActivated;
+    }
     let Ok(hwnd) = window.hwnd() else {
-        return false;
+        return WindowActivationOutcome::WindowUnavailable;
     };
     let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
-    if !crate::windows_focus::force_foreground_window(hwnd, source) {
-        return false;
+    if !crate::windows_focus::request_foreground_window(hwnd, source) {
+        return WindowActivationOutcome::Pending;
     }
     // Focus the content only after obtaining real foreground ownership. Tao's
     // native window set_focus fallback can synthesize Alt, so do not call it.
     if let Err(error) = window.as_ref().set_focus() {
         log::warn!("window:activate-webview-focus-failed source={source} error={error}");
-        return false;
+        return WindowActivationOutcome::Pending;
     }
-    crate::windows_focus::confirm_foreground_focus(hwnd, source)
+    if crate::windows_focus::confirm_foreground_focus(hwnd, source) {
+        WindowActivationOutcome::Activated
+    } else {
+        WindowActivationOutcome::Pending
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -215,9 +233,9 @@ fn retry_main_window_activation(app: &AppHandle, source: &'static str, generatio
                 let done = MAIN_WINDOW_ACTIVATION_GENERATION
                     .load(std::sync::atomic::Ordering::Acquire)
                     != generation
-                    || handle
-                        .get_webview_window("main")
-                        .is_none_or(|window| focus_windows_webview(&window, source));
+                    || handle.get_webview_window("main").is_none_or(|window| {
+                        focus_windows_webview(&window, source) != WindowActivationOutcome::Pending
+                    });
                 let _ = sender.send(done);
             }) {
                 log::warn!("window:activate-retry-schedule-failed source={source} error={error}");
@@ -408,6 +426,9 @@ pub fn resolve_tray_action(menu_id: &str) -> Option<&str> {
     let _ = menu_id;
     None
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod window_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

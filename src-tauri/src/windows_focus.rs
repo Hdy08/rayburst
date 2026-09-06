@@ -48,13 +48,12 @@ pub fn retain_notification_foreground_permission() -> bool {
     granted
 }
 
-/// Request foreground ownership without synthetic input or input-queue attachment.
-/// Content focus must be checked separately after the target view is activated.
+/// Show/restore externally owned windows such as Explorer before requesting focus.
+/// Tauri windows must use Tauri's visibility APIs and request_foreground_window.
 pub fn force_foreground_window(hwnd: HWND, source: &str) -> bool {
     if hwnd.is_null() {
         return false;
     }
-    let before = unsafe { GetForegroundWindow() };
     let show = if unsafe { IsIconic(hwnd) != 0 } {
         SW_RESTORE
     } else {
@@ -67,6 +66,16 @@ pub fn force_foreground_window(hwnd: HWND, source: &str) -> bool {
             ShowWindowAsync(hwnd, show);
         }
     }
+    request_foreground_window(hwnd, source)
+}
+
+/// Request foreground ownership without changing visibility or window state.
+/// Content focus must be checked separately after the target view is activated.
+pub fn request_foreground_window(hwnd: HWND, source: &str) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    let before = unsafe { GetForegroundWindow() };
     let accepted = before == hwnd || unsafe { SetForegroundWindow(hwnd) != 0 };
     let after = unsafe { GetForegroundWindow() };
     let foreground = after == hwnd;
@@ -247,6 +256,7 @@ mod tests {
     #[test]
     fn no_window_is_not_a_successful_activation() {
         assert!(!force_foreground_window(std::ptr::null_mut(), "test"));
+        assert!(!request_foreground_window(std::ptr::null_mut(), "test"));
         assert!(!confirm_foreground_focus(std::ptr::null_mut(), "test"));
     }
 }
