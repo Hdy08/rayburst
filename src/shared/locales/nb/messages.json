@@ -596,7 +596,6 @@
     "stream-max-range-size": "Maksimal HTTP-områdestørrelse",
     "stream-max-range-size-hint": "0 betyr ubegrenset. Bruk K, M eller G, for eksempel 5M.",
     "proxy-import-unsupported": "Kontroller unntak som ikke støttes før lagring: {rules}",
-    "open-task-list-on-start-notification-click": "Åpne oppgavelisten når startvarselet klikkes",
     "task-card-opacity": "Opasitet for oppgavekort",
     "custom-background-image": "Egendefinert bakgrunnsbilde",
     "clear-background-image": "Fjern bakgrunnsbilde",

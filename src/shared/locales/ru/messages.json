@@ -596,7 +596,6 @@
     "stream-max-range-size": "Максимальный размер диапазона HTTP",
     "stream-max-range-size-hint": "0 — без ограничений. Допустимы K, M и G, например 5M.",
     "proxy-import-unsupported": "Проверьте неподдерживаемые исключения перед сохранением: {rules}",
-    "open-task-list-on-start-notification-click": "Открывать список задач при нажатии на уведомление о запуске",
     "task-card-opacity": "Непрозрачность карточки задачи",
     "custom-background-image": "Пользовательское фоновое изображение",
     "clear-background-image": "Очистить фоновое изображение",

@@ -531,11 +531,6 @@ onMounted(async () => {
           <NFormItem label=" ">
             <PreferenceCheckboxGrid v-model:value="selectedNotificationTypes" :options="notificationTypeOptions" />
           </NFormItem>
-          <NFormItem label=" ">
-            <NCheckbox v-model:checked="form.openTaskListOnStartNotificationClick" :disabled="!form.notifyOnStart">
-              {{ t('preferences.open-task-list-on-start-notification-click') }}
-            </NCheckbox>
-          </NFormItem>
         </NCollapseTransition>
         <NFormItem :label="t('preferences.shutdown-when-complete')">
           <NSwitch v-model:value="form.shutdownWhenComplete" />

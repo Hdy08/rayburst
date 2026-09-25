@@ -59,7 +59,6 @@ describe('PreferenceStore', () => {
       speedLimitButtonVisible: false,
       speedLimitButtonOpacity: 46,
       openFolderOnNotificationClick: true,
-      openTaskListOnStartNotificationClick: true,
     } satisfies Partial<AppConfig>
 
     await store.updateAndSave(customization)

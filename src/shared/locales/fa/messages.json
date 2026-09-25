@@ -596,7 +596,6 @@
     "stream-max-range-size": "حداکثر اندازه بازه HTTP",
     "stream-max-range-size-hint": "0 یعنی نامحدود. از K، M یا G استفاده کنید، مانند 5M.",
     "proxy-import-unsupported": "پیش از ذخیره، استثناهای پشتیبانی‌نشده را بررسی کنید: {rules}",
-    "open-task-list-on-start-notification-click": "باز کردن فهرست وظایف با کلیک روی اعلان شروع",
     "task-card-opacity": "شفافیت کارت وظیفه",
     "custom-background-image": "تصویر پس‌زمینه سفارشی",
     "clear-background-image": "پاک کردن تصویر پس‌زمینه",

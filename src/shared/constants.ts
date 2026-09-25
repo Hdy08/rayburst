@@ -279,7 +279,6 @@ export const DEFAULT_APP_CONFIG = {
   notifyOnStart: true,
   notifyOnComplete: true, // main value of OS notification: background completion alert
   openFolderOnNotificationClick: false, // legacy persisted value; completion actions now use explicit buttons
-  openTaskListOnStartNotificationClick: false, // opt-in: clicking start notifications opens task list
   mediaSelectBeforeDownload: true,
   mediaDefaultFormat: 'mp4' as const,
   newTaskShowDownloading: true, // auto-navigate to downloads after adding task

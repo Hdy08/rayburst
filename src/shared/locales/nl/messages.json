@@ -596,7 +596,6 @@
     "stream-max-range-size": "Maximale HTTP-bereikgrootte",
     "stream-max-range-size-hint": "0 betekent onbeperkt. Gebruik K, M of G, bijvoorbeeld 5M.",
     "proxy-import-unsupported": "Controleer niet-ondersteunde uitzonderingen vóór het opslaan: {rules}",
-    "open-task-list-on-start-notification-click": "Takenlijst openen bij klikken op startmelding",
     "task-card-opacity": "Dekking van taakkaart",
     "custom-background-image": "Aangepaste achtergrondafbeelding",
     "clear-background-image": "Achtergrondafbeelding wissen",

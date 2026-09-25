@@ -434,7 +434,7 @@ pub fn build_task_start_notification(
         body: message.body,
         locale,
         click_open_target: None,
-        click_show_task_list: config.open_task_list_on_start_notification_click,
+        click_show_task_list: true,
         click_open_file_gid: None,
         click_show_in_folder_gid: None,
     })
@@ -1310,17 +1310,6 @@ mod tests {
         assert_eq!(content.body, "Downloading: file.zip");
         assert_eq!(content.locale, "en-US");
         assert_eq!(content.click_open_target, None);
-        assert!(!content.click_show_task_list);
-    }
-
-    #[test]
-    fn start_notification_includes_click_show_task_list_when_enabled() {
-        let mut config = cfg();
-        config.open_task_list_on_start_notification_click = true;
-
-        let content = build_task_start_notification(&["file.zip".to_string()], &config).unwrap();
-
-        assert_eq!(content.kind, TaskNotificationKind::Start);
         assert!(content.click_show_task_list);
     }
 

@@ -596,7 +596,6 @@
     "stream-max-range-size": "Mida màxima del rang HTTP",
     "stream-max-range-size-hint": "0 vol dir sense límit. Feu servir K, M o G, per exemple 5M.",
     "proxy-import-unsupported": "Reviseu les excepcions no compatibles abans de desar: {rules}",
-    "open-task-list-on-start-notification-click": "Obre la llista de tasques en fer clic a la notificació d'inici",
     "task-card-opacity": "Opacitat de la targeta de tasca",
     "custom-background-image": "Imatge de fons personalitzada",
     "clear-background-image": "Esborra la imatge de fons",

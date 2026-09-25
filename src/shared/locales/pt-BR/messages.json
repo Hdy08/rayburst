@@ -596,7 +596,6 @@
     "stream-max-range-size": "Tamanho máximo do intervalo HTTP",
     "stream-max-range-size-hint": "0 significa sem limite. Use K, M ou G, por exemplo 5M.",
     "proxy-import-unsupported": "Revise as exceções não compatíveis antes de salvar: {rules}",
-    "open-task-list-on-start-notification-click": "Abrir a lista de tarefas ao clicar na notificação de início",
     "task-card-opacity": "Opacidade do cartão de tarefa",
     "custom-background-image": "Imagem de fundo personalizada",
     "clear-background-image": "Limpar imagem de fundo",

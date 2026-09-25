@@ -596,7 +596,6 @@
     "stream-max-range-size": "Maximale HTTP-Bereichsgröße",
     "stream-max-range-size-hint": "0 bedeutet unbegrenzt. K, M oder G verwenden, z. B. 5M.",
     "proxy-import-unsupported": "Nicht unterstützte Ausnahmen vor dem Speichern prüfen: {rules}",
-    "open-task-list-on-start-notification-click": "Aufgabenliste beim Klicken auf die Startbenachrichtigung öffnen",
     "task-card-opacity": "Deckkraft der Aufgabenkarte",
     "custom-background-image": "Benutzerdefiniertes Hintergrundbild",
     "clear-background-image": "Hintergrundbild entfernen",

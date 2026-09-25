@@ -596,7 +596,6 @@
     "stream-max-range-size": "HTTP 範囲の最大サイズ",
     "stream-max-range-size-hint": "0 は無制限です。K、M、G を使用できます（例：5M）。",
     "proxy-import-unsupported": "保存前に未対応の除外ルールを確認してください：{rules}",
-    "open-task-list-on-start-notification-click": "開始通知のクリックでタスクリストを開く",
     "task-card-opacity": "タスクカードの不透明度",
     "custom-background-image": "カスタム背景画像",
     "clear-background-image": "背景画像をクリア",

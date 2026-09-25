@@ -596,7 +596,6 @@
     "stream-max-range-size": "HTTP 分段大小上限",
     "stream-max-range-size-hint": "0 表示不限。支持 K、M、G，例如 5M。",
     "proxy-import-unsupported": "保存前请检查不支持的绕过规则：{rules}",
-    "open-task-list-on-start-notification-click": "点击开始通知时打开任务列表",
     "task-card-opacity": "任务卡片不透明度",
     "custom-background-image": "自定义背景图片",
     "clear-background-image": "清除背景图片",

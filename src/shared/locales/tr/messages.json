@@ -596,7 +596,6 @@
     "stream-max-range-size": "En büyük HTTP aralığı boyutu",
     "stream-max-range-size-hint": "0 sınırsızdır. K, M veya G kullanın, örneğin 5M.",
     "proxy-import-unsupported": "Kaydetmeden önce desteklenmeyen istisnaları gözden geçirin: {rules}",
-    "open-task-list-on-start-notification-click": "Başlatma bildirimine tıklayınca görev listesini aç",
     "task-card-opacity": "Görev kartı opaklığı",
     "custom-background-image": "Özel arka plan görseli",
     "clear-background-image": "Arka plan görselini temizle",

@@ -596,7 +596,6 @@
     "stream-max-range-size": "Maximum HTTP range size",
     "stream-max-range-size-hint": "0 means unlimited. Use K, M or G, for example 5M.",
     "proxy-import-unsupported": "Review unsupported bypass rules before saving: {rules}",
-    "open-task-list-on-start-notification-click": "Open task list when clicking start notification",
     "task-card-opacity": "Task card opacity",
     "custom-background-image": "Custom background image",
     "clear-background-image": "Clear background image",

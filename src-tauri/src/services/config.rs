@@ -44,7 +44,6 @@ pub struct RuntimeConfig {
     pub task_notification: bool,
     /// Whether completed downloads should trigger native system notifications.
     pub notify_on_complete: bool,
-    pub open_task_list_on_start_notification_click: bool,
     /// Whether newly started downloads should trigger native system notifications.
     pub notify_on_start: bool,
     /// Port for the embedded HTTP API (browser extension communication).
@@ -75,7 +74,6 @@ impl Default for RuntimeConfig {
             keep_awake: false,
             task_notification: true,
             notify_on_complete: true,
-            open_task_list_on_start_notification_click: false,
             notify_on_start: true,
             extension_api_port: DEFAULT_EXTENSION_API_PORT,
             allow_remote_access: false,

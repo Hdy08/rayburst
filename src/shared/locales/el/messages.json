@@ -596,7 +596,6 @@
     "stream-max-range-size": "Μέγιστο μέγεθος εύρους HTTP",
     "stream-max-range-size-hint": "0 σημαίνει απεριόριστο. Χρησιμοποιήστε K, M ή G, π.χ. 5M.",
     "proxy-import-unsupported": "Ελέγξτε τις μη υποστηριζόμενες εξαιρέσεις πριν από την αποθήκευση: {rules}",
-    "open-task-list-on-start-notification-click": "Άνοιγμα λίστας εργασιών με κλικ στην ειδοποίηση έναρξης",
     "task-card-opacity": "Αδιαφάνεια κάρτας εργασίας",
     "custom-background-image": "Προσαρμοσμένη εικόνα φόντου",
     "clear-background-image": "Εκκαθάριση εικόνας φόντου",

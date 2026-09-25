@@ -596,7 +596,6 @@
     "stream-max-range-size": "Kích thước vùng HTTP tối đa",
     "stream-max-range-size-hint": "0 là không giới hạn. Dùng K, M hoặc G, ví dụ 5M.",
     "proxy-import-unsupported": "Kiểm tra các quy tắc bỏ qua không được hỗ trợ trước khi lưu: {rules}",
-    "open-task-list-on-start-notification-click": "Mở danh sách tác vụ khi bấm thông báo bắt đầu",
     "task-card-opacity": "Độ mờ của thẻ tác vụ",
     "custom-background-image": "Ảnh nền tùy chỉnh",
     "clear-background-image": "Xóa ảnh nền",

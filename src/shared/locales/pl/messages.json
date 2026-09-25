@@ -596,7 +596,6 @@
     "stream-max-range-size": "Maksymalny rozmiar zakresu HTTP",
     "stream-max-range-size-hint": "0 oznacza brak limitu. Użyj K, M lub G, np. 5M.",
     "proxy-import-unsupported": "Sprawdź nieobsługiwane wyjątki przed zapisaniem: {rules}",
-    "open-task-list-on-start-notification-click": "Otwórz listę zadań po kliknięciu powiadomienia o rozpoczęciu",
     "task-card-opacity": "Nieprzezroczystość karty zadania",
     "custom-background-image": "Niestandardowy obraz tła",
     "clear-background-image": "Wyczyść obraz tła",

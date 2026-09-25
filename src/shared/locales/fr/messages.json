@@ -596,7 +596,6 @@
     "stream-max-range-size": "Taille maximale des plages HTTP",
     "stream-max-range-size-hint": "0 signifie sans limite. Utilisez K, M ou G, par exemple 5M.",
     "proxy-import-unsupported": "Vérifiez les exceptions non prises en charge avant de sauvegarder : {rules}",
-    "open-task-list-on-start-notification-click": "Ouvrir la liste des tâches en cliquant sur la notification de démarrage",
     "task-card-opacity": "Opacité de la carte de tâche",
     "custom-background-image": "Image d’arrière-plan personnalisée",
     "clear-background-image": "Effacer l’image d’arrière-plan",

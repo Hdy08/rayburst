@@ -596,7 +596,6 @@
     "stream-max-range-size": "अधिकतम HTTP रेंज आकार",
     "stream-max-range-size-hint": "0 का अर्थ असीमित है। K, M या G इस्तेमाल करें, जैसे 5M।",
     "proxy-import-unsupported": "सहेजने से पहले असमर्थित बायपास नियम जाँचें: {rules}",
-    "open-task-list-on-start-notification-click": "शुरुआत की सूचना पर क्लिक करने पर कार्य सूची खोलें",
     "task-card-opacity": "कार्य कार्ड अपारदर्शिता",
     "custom-background-image": "कस्टम पृष्ठभूमि चित्र",
     "clear-background-image": "पृष्ठभूमि चित्र साफ़ करें",

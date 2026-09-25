@@ -596,7 +596,6 @@
     "stream-max-range-size": "Dimensiunea maximă a intervalului HTTP",
     "stream-max-range-size-hint": "0 înseamnă nelimitat. Folosiți K, M sau G, de exemplu 5M.",
     "proxy-import-unsupported": "Verificați excepțiile neacceptate înainte de salvare: {rules}",
-    "open-task-list-on-start-notification-click": "Deschide lista de sarcini la clic pe notificarea de pornire",
     "task-card-opacity": "Opacitatea cardului de activitate",
     "custom-background-image": "Imagine de fundal personalizată",
     "clear-background-image": "Șterge imaginea de fundal",

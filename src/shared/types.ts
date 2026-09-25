@@ -496,8 +496,6 @@ export interface AppConfig {
   notifyOnComplete: boolean
   /** @deprecated Retained only to preserve existing persisted preferences. */
   openFolderOnNotificationClick: boolean
-  /** Opens the task list when a download-start notification is clicked. */
-  openTaskListOnStartNotificationClick: boolean
   showProgressBar: boolean
   traySpeedometer: boolean
   dockBadgeSpeed: boolean

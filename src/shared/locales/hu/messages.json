@@ -596,7 +596,6 @@
     "stream-max-range-size": "HTTP-tartomány maximális mérete",
     "stream-max-range-size-hint": "0 esetén korlátlan. Használjon K, M vagy G utótagot, például 5M.",
     "proxy-import-unsupported": "Mentés előtt ellenőrizze a nem támogatott kivételeket: {rules}",
-    "open-task-list-on-start-notification-click": "Feladatlista megnyitása az indítási értesítésre kattintva",
     "task-card-opacity": "Feladatkártya átlátszatlansága",
     "custom-background-image": "Egyéni háttérkép",
     "clear-background-image": "Háttérkép törlése",

@@ -596,7 +596,6 @@
     "stream-max-range-size": "Ukuran rentang HTTP maksimum",
     "stream-max-range-size-hint": "0 berarti tanpa batas. Gunakan K, M, atau G, misalnya 5M.",
     "proxy-import-unsupported": "Periksa aturan pengecualian yang tidak didukung sebelum menyimpan: {rules}",
-    "open-task-list-on-start-notification-click": "Buka daftar tugas saat mengeklik notifikasi mulai",
     "task-card-opacity": "Opasitas kartu tugas",
     "custom-background-image": "Gambar latar belakang khusus",
     "clear-background-image": "Hapus gambar latar belakang",
