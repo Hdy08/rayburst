@@ -139,7 +139,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--main-bg);
+  background: linear-gradient(
+    to right,
+    var(--sidebar-bg) 0 var(--sidebar-width),
+    var(--main-bg) var(--sidebar-width) 100%
+  );
   pointer-events: none;
   user-select: none;
   z-index: 0;
