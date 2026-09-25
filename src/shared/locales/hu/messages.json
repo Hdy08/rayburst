@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Lapozógombok opacitása",
     "task-list-selected-background-opacity": "Kategóriagombok opacitása",
     "speed-limit-button": "Sebességkorlát gomb",
-    "speed-limit-button-opacity": "Sebességkorlát gomb opacitása",
-    "task-list-watermark": "Feladatlista vízjel"
+    "speed-limit-button-opacity": "Sebességkorlát gomb opacitása"
   },
   "task": {
     "scope-all": "Összes",

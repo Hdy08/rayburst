@@ -21,7 +21,7 @@ const appStore = {
   interval: 1000,
 }
 
-const preferenceStore = reactive({ config: { showLogoWhenEmpty: true } })
+const preferenceStore = reactive({ config: { showLogoWhenEmpty: true, backgroundImagePath: '' } })
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -101,6 +101,7 @@ describe('TaskView', () => {
     isEngineReadyMock.mockReturnValue(true)
     taskStore.isCurrentListEmpty = false
     preferenceStore.config.showLogoWhenEmpty = true
+    preferenceStore.config.backgroundImagePath = ''
   })
 
   afterEach(() => {
@@ -148,6 +149,22 @@ describe('TaskView', () => {
     taskStore.isCurrentListEmpty = false
     await flushPromises()
     expect(wrapper.find('.empty-brand').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps the empty-list mark controlled by the remaining logo preference', async () => {
+    taskStore.isCurrentListEmpty = true
+    preferenceStore.config.backgroundImagePath = 'C:\\Pictures\\background.png'
+    const wrapper = mount(TaskView)
+    expect(wrapper.find('.empty-brand').exists()).toBe(true)
+
+    preferenceStore.config.showLogoWhenEmpty = false
+    await flushPromises()
+    expect(wrapper.find('.empty-brand').exists()).toBe(false)
+
+    preferenceStore.config.showLogoWhenEmpty = true
+    await flushPromises()
+    expect(wrapper.find('.empty-brand').exists()).toBe(true)
     wrapper.unmount()
   })
 })

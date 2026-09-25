@@ -607,8 +607,7 @@
     "task-pagination-opacity": "페이지 전환 버튼 불투명도",
     "task-list-selected-background-opacity": "분류 버튼 불투명도",
     "speed-limit-button": "속도 제한 버튼",
-    "speed-limit-button-opacity": "속도 제한 버튼 불투명도",
-    "task-list-watermark": "작업 목록 워터마크"
+    "speed-limit-button-opacity": "속도 제한 버튼 불투명도"
   },
   "task": {
     "scope-all": "전체",

@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Krycie przycisków stronicowania",
     "task-list-selected-background-opacity": "Krycie przycisków kategorii",
     "speed-limit-button": "Przycisk limitu prędkości",
-    "speed-limit-button-opacity": "Krycie przycisku limitu prędkości",
-    "task-list-watermark": "Znak wodny listy zadań"
+    "speed-limit-button-opacity": "Krycie przycisku limitu prędkości"
   },
   "task": {
     "scope-all": "Wszystkie",

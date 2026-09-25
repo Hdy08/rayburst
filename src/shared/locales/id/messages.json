@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Opasitas tombol paginasi",
     "task-list-selected-background-opacity": "Opasitas tombol kategori",
     "speed-limit-button": "Tombol batas kecepatan",
-    "speed-limit-button-opacity": "Opasitas tombol batas kecepatan",
-    "task-list-watermark": "Tanda air daftar tugas"
+    "speed-limit-button-opacity": "Opasitas tombol batas kecepatan"
   },
   "task": {
     "scope-all": "Semua",

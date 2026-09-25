@@ -6,21 +6,16 @@ import { useTaskBackgroundConfig } from '@/composables/useTaskBackgroundConfig'
 import { logger } from '@shared/logger'
 import { calculateCanvasPixelSize, calculateCoverSourceRect } from '@shared/utils/backgroundCanvas'
 
-const props = withDefaults(defineProps<{ show: boolean; showDefaultIcon?: boolean }>(), { showDefaultIcon: true })
+const props = defineProps<{ show: boolean }>()
 
 const taskBackground = useTaskBackgroundConfig()
 const customBackgroundImageUrl = useLocalImageObjectUrl(() =>
   props.show ? taskBackground.backgroundImagePath.value : '',
 )
 const showCustomBackgroundImage = computed(() => props.show && customBackgroundImageUrl.value.length > 0)
-const showDefaultBackgroundIcon = computed(
-  () => props.show && props.showDefaultIcon && taskBackground.showDefaultBackgroundIcon.value,
-)
-const showTaskBackground = computed(() => showCustomBackgroundImage.value || showDefaultBackgroundIcon.value)
 const backgroundCanvas = ref<HTMLCanvasElement | null>(null)
 const backgroundLayerStyle = computed(() => ({
   '--task-background-content-opacity': String(taskBackground.backgroundOpacity.value),
-  '--task-background-default-icon-opacity': String(taskBackground.defaultIconOpacity.value),
 }))
 
 let decodedBackgroundImage: HTMLImageElement | null = null
@@ -123,16 +118,15 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="task-background-layer"
-    :class="{ 'is-visible': show }"
+    :class="{ 'is-visible': show && taskBackground.hasCustomBackgroundImagePath.value }"
     :style="backgroundLayerStyle"
     aria-hidden="true"
     @dragstart.prevent
     @selectstart.prevent
   >
     <Transition name="task-background-content">
-      <div v-if="showTaskBackground" class="task-background-content">
-        <canvas v-if="showCustomBackgroundImage" ref="backgroundCanvas" class="task-background-image" />
-        <div v-else class="task-background-icon" />
+      <div v-if="showCustomBackgroundImage" class="task-background-content">
+        <canvas ref="backgroundCanvas" class="task-background-image" />
       </div>
     </Transition>
   </div>
@@ -140,11 +134,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .task-background-layer {
-  grid-column: 2;
-  grid-row: 3;
-  position: relative;
-  min-width: 0;
-  min-height: 0;
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -166,16 +157,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.task-background-icon {
-  max-width: 480px;
-  width: 80%;
-  aspect-ratio: 1;
-  background: color-mix(in srgb, var(--m3-on-surface-variant) 85%, var(--m3-primary));
-  mask: url('/logo.svg') center / contain no-repeat;
-  opacity: var(--task-background-default-icon-opacity);
-  user-select: none;
-  -webkit-user-drag: none;
 }
 .task-background-image {
   display: block;

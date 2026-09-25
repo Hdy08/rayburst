@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Непрозрачность кнопок пагинации",
     "task-list-selected-background-opacity": "Непрозрачность кнопок категорий",
     "speed-limit-button": "Кнопка ограничения скорости",
-    "speed-limit-button-opacity": "Непрозрачность кнопки ограничения скорости",
-    "task-list-watermark": "Водяной знак списка задач"
+    "speed-limit-button-opacity": "Непрозрачность кнопки ограничения скорости"
   },
   "task": {
     "scope-all": "Все",

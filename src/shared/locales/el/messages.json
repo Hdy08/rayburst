@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Αδιαφάνεια κουμπιών σελιδοποίησης",
     "task-list-selected-background-opacity": "Αδιαφάνεια κουμπιών κατηγορίας",
     "speed-limit-button": "Κουμπί ορίου ταχύτητας",
-    "speed-limit-button-opacity": "Αδιαφάνεια κουμπιού ορίου ταχύτητας",
-    "task-list-watermark": "Υδατογράφημα λίστας εργασιών"
+    "speed-limit-button-opacity": "Αδιαφάνεια κουμπιού ορίου ταχύτητας"
   },
   "task": {
     "scope-all": "Όλα",

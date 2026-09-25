@@ -607,8 +607,7 @@
     "task-pagination-opacity": "کدری دکمه‌های صفحه‌بندی",
     "task-list-selected-background-opacity": "کدری دکمه‌های دسته‌بندی",
     "speed-limit-button": "دکمه محدودیت سرعت",
-    "speed-limit-button-opacity": "کدری دکمه محدودیت سرعت",
-    "task-list-watermark": "واترمارک فهرست وظایف"
+    "speed-limit-button-opacity": "کدری دکمه محدودیت سرعت"
   },
   "task": {
     "scope-all": "همه",

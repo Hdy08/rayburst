@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Sayfalama düğmeleri opaklığı",
     "task-list-selected-background-opacity": "Kategori düğmeleri opaklığı",
     "speed-limit-button": "Hız sınırı düğmesi",
-    "speed-limit-button-opacity": "Hız sınırı düğmesi opaklığı",
-    "task-list-watermark": "Görev listesi filigranı"
+    "speed-limit-button-opacity": "Hız sınırı düğmesi opaklığı"
   },
   "task": {
     "scope-all": "Tümü",

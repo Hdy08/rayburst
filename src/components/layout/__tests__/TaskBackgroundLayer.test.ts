@@ -1,25 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, reactive } from 'vue'
 
 const state = vi.hoisted(() => ({
   preferenceStore: {
     config: {
-      taskListWatermark: true,
       backgroundImagePath: '',
       backgroundOpacity: 35,
     },
   },
-  isDark: { value: false },
   imageUrl: { value: '', __v_isRef: true },
 }))
 
 vi.mock('@/stores/preference', () => ({
   usePreferenceStore: () => state.preferenceStore,
-}))
-
-vi.mock('@/composables/useTheme', () => ({
-  useTheme: () => ({ isDark: state.isDark }),
 }))
 
 vi.mock('@/composables/useLocalImageObjectUrl', () => ({
@@ -35,18 +29,19 @@ afterEach(() => {
 
 describe('TaskBackgroundLayer', () => {
   beforeEach(() => {
-    state.preferenceStore.config.taskListWatermark = true
-    state.preferenceStore.config.backgroundImagePath = ''
-    state.preferenceStore.config.backgroundOpacity = 35
-    state.isDark.value = false
+    state.preferenceStore.config = reactive({
+      backgroundImagePath: '',
+      backgroundOpacity: 35,
+    })
     state.imageUrl.value = ''
   })
 
-  it('shows the default background icon on task pages', () => {
+  it('keeps the background layer hidden when no custom image is selected', () => {
     const wrapper = mount(TaskBackgroundLayer, { props: { show: true } })
 
-    expect(wrapper.find('.task-background-layer').classes()).toContain('is-visible')
-    expect(wrapper.find('.task-background-icon').exists()).toBe(true)
+    expect(wrapper.find('.task-background-layer').classes()).not.toContain('is-visible')
+    expect(wrapper.find('.task-background-content').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('keeps the layer mounted but hidden off task pages', () => {
@@ -56,7 +51,7 @@ describe('TaskBackgroundLayer', () => {
     expect(wrapper.find('.task-background-layer').classes()).not.toContain('is-visible')
   })
 
-  it('renders a custom background image ahead of the default icon', () => {
+  it('renders a custom background image across the full layer', () => {
     state.preferenceStore.config.backgroundImagePath = 'C:\\Users\\me\\Pictures\\background.png'
     state.imageUrl.value = 'blob:background'
 
@@ -64,7 +59,8 @@ describe('TaskBackgroundLayer', () => {
     const backgroundImage = wrapper.find('.task-background-image')
 
     expect(backgroundImage.element.tagName).toBe('CANVAS')
-    expect(wrapper.find('.task-background-icon').exists()).toBe(false)
+    expect(wrapper.find('.task-background-layer').classes()).toContain('is-visible')
+    wrapper.unmount()
   })
 
   it('draws custom backgrounds with high-quality image smoothing', async () => {
@@ -121,20 +117,23 @@ describe('TaskBackgroundLayer', () => {
     wrapper.unmount()
   })
 
-  it('applies configured background opacity only to custom background content', () => {
+  it('applies configured background opacity to the image content', () => {
     state.preferenceStore.config.backgroundOpacity = 75
 
     const wrapper = mount(TaskBackgroundLayer, { props: { show: true } })
 
     const layerStyle = wrapper.find('.task-background-layer').attributes('style')
     expect(layerStyle).toContain('--task-background-content-opacity: 0.75')
-    expect(layerStyle).toContain('--task-background-default-icon-opacity: 0.35')
+    wrapper.unmount()
   })
 
-  it('keeps the full-window background base visible immediately on task pages', () => {
+  it('keeps the full-window background base visible while the custom image loads', () => {
+    state.preferenceStore.config.backgroundImagePath = 'C:\\Users\\me\\Pictures\\background.png'
     const wrapper = mount(TaskBackgroundLayer, { props: { show: true } })
 
     expect(wrapper.find('.task-background-layer').classes()).toContain('is-visible')
+    expect(wrapper.find('.task-background-content').exists()).toBe(false)
     expect(wrapper.find('.task-background-layer').attributes('style')).not.toContain('--task-background-left-inset')
+    wrapper.unmount()
   })
 })

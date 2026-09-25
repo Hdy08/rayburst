@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Độ mờ của nút phân trang",
     "task-list-selected-background-opacity": "Độ mờ của nút danh mục",
     "speed-limit-button": "Nút giới hạn tốc độ",
-    "speed-limit-button-opacity": "Độ mờ của nút giới hạn tốc độ",
-    "task-list-watermark": "Hình mờ danh sách tác vụ"
+    "speed-limit-button-opacity": "Độ mờ của nút giới hạn tốc độ"
   },
   "task": {
     "scope-all": "Tất cả",

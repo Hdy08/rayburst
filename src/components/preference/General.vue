@@ -457,8 +457,8 @@ onMounted(async () => {
           <NFormItem :label="t('preferences.sidebar-task-counts')">
             <NSwitch v-model:value="form.sidebarTaskCounts" />
           </NFormItem>
-          <NFormItem :label="t('preferences.task-list-watermark')">
-            <NSwitch v-model:value="form.taskListWatermark" />
+          <NFormItem :label="t('preferences.show-logo-when-empty')">
+            <NSwitch v-model:value="form.showLogoWhenEmpty" />
           </NFormItem>
           <NFormItem :label="t('preferences.custom-background-image')">
             <div class="background-image-picker">
@@ -517,9 +517,6 @@ onMounted(async () => {
             <PreferenceOpacityControl v-model="form.speedLimitButtonOpacity" />
           </NFormItem>
         </NCollapseTransition>
-        <NFormItem :label="t('preferences.show-logo-when-empty')">
-          <NSwitch v-model:value="form.showLogoWhenEmpty" />
-        </NFormItem>
         <NFormItem :label="t('preferences.reduce-motion')">
           <NSwitch v-model:value="form.reduceMotion" />
         </NFormItem>

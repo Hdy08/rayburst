@@ -607,8 +607,7 @@
     "task-pagination-opacity": "عتامة أزرار التنقل بين الصفحات",
     "task-list-selected-background-opacity": "عتامة أزرار التصنيف",
     "speed-limit-button": "زر حد السرعة",
-    "speed-limit-button-opacity": "عتامة زر حد السرعة",
-    "task-list-watermark": "علامة مائية لقائمة المهام"
+    "speed-limit-button-opacity": "عتامة زر حد السرعة"
   },
   "task": {
     "scope-all": "الكل",

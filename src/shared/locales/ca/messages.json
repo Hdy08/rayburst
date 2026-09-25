@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Opacitat dels botons de paginació",
     "task-list-selected-background-opacity": "Opacitat dels botons de categoria",
     "speed-limit-button": "Botó de límit de velocitat",
-    "speed-limit-button-opacity": "Opacitat del botó de límit de velocitat",
-    "task-list-watermark": "Marca d'aigua de la llista de tasques"
+    "speed-limit-button-opacity": "Opacitat del botó de límit de velocitat"
   },
   "task": {
     "scope-all": "Totes",

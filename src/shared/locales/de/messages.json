@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Deckkraft der Seitenschaltflächen",
     "task-list-selected-background-opacity": "Deckkraft der Kategorieschaltflächen",
     "speed-limit-button": "Geschwindigkeitslimit-Schaltfläche",
-    "speed-limit-button-opacity": "Deckkraft der Geschwindigkeitslimit-Schaltfläche",
-    "task-list-watermark": "Wasserzeichen der Aufgabenliste"
+    "speed-limit-button-opacity": "Deckkraft der Geschwindigkeitslimit-Schaltfläche"
   },
   "task": {
     "scope-all": "Alle",

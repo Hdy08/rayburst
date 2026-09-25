@@ -607,8 +607,7 @@
     "task-pagination-opacity": "ページ切り替えボタンの不透明度",
     "task-list-selected-background-opacity": "カテゴリボタンの不透明度",
     "speed-limit-button": "速度制限ボタン",
-    "speed-limit-button-opacity": "速度制限ボタンの不透明度",
-    "task-list-watermark": "タスクリストの透かし"
+    "speed-limit-button-opacity": "速度制限ボタンの不透明度"
   },
   "task": {
     "scope-all": "すべて",

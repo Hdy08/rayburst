@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Opacité des boutons de pagination",
     "task-list-selected-background-opacity": "Opacité des boutons de catégorie",
     "speed-limit-button": "Bouton de limite de vitesse",
-    "speed-limit-button-opacity": "Opacité du bouton de limite de vitesse",
-    "task-list-watermark": "Filigrane de la liste des tâches"
+    "speed-limit-button-opacity": "Opacité du bouton de limite de vitesse"
   },
   "task": {
     "scope-all": "Toutes",

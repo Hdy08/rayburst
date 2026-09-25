@@ -14,6 +14,16 @@ import { NUMERIC_CONFIG_CONSTRAINTS } from '@shared/configConstraints'
 import type { AppConfig } from '@shared/types'
 
 describe('hydrateAppConfig', () => {
+  it('drops the retired task list watermark key from saved preferences', () => {
+    const legacyConfig = { taskListWatermark: false, showLogoWhenEmpty: false }
+    const result = hydrateAppConfig(legacyConfig)
+
+    expect(result.config.showLogoWhenEmpty).toBe(false)
+    expect('taskListWatermark' in result.config).toBe(false)
+    expect(result.repairs).toContain('taskListWatermark')
+    expect(result.shouldPersist).toBe(true)
+  })
+
   it('hydrates missing top-level fields from defaults', () => {
     const result = hydrateAppConfig({ theme: 'dark', locale: 'ja' })
 

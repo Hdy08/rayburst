@@ -607,8 +607,7 @@
     "task-pagination-opacity": "पृष्ठांकन बटन की अपारदर्शिता",
     "task-list-selected-background-opacity": "श्रेणी बटन की अपारदर्शिता",
     "speed-limit-button": "गति सीमा बटन",
-    "speed-limit-button-opacity": "गति सीमा बटन की अपारदर्शिता",
-    "task-list-watermark": "कार्य सूची वॉटरमार्क"
+    "speed-limit-button-opacity": "गति सीमा बटन की अपारदर्शिता"
   },
   "task": {
     "scope-all": "सभी",

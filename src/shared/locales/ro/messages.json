@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Opacitatea butoanelor de paginare",
     "task-list-selected-background-opacity": "Opacitatea butoanelor de categorie",
     "speed-limit-button": "Buton limită de viteză",
-    "speed-limit-button-opacity": "Opacitatea butonului limită de viteză",
-    "task-list-watermark": "Filigran listă de sarcini"
+    "speed-limit-button-opacity": "Opacitatea butonului limită de viteză"
   },
   "task": {
     "scope-all": "Toate",

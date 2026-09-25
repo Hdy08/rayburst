@@ -607,8 +607,7 @@
     "task-pagination-opacity": "ความทึบของปุ่มเปลี่ยนหน้า",
     "task-list-selected-background-opacity": "ความทึบของปุ่มหมวดหมู่",
     "speed-limit-button": "ปุ่มจำกัดความเร็ว",
-    "speed-limit-button-opacity": "ความทึบของปุ่มจำกัดความเร็ว",
-    "task-list-watermark": "ลายน้ำรายการงาน"
+    "speed-limit-button-opacity": "ความทึบของปุ่มจำกัดความเร็ว"
   },
   "task": {
     "scope-all": "ทั้งหมด",

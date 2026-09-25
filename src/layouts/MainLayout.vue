@@ -44,6 +44,8 @@ import { useTaskStore } from '@/stores/task'
 import { usePreferenceStore } from '@/stores/preference'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useTaskBackgroundConfig } from '@/composables/useTaskBackgroundConfig'
+import { useAppColorTokens } from '@/composables/useColorScheme'
+import { buildTaskPaginationTheme } from '@/layouts/taskPaginationTheme'
 import { opacityPercentToCssPercent } from '@shared/utils/opacity'
 import { NModal, NButton, NCheckbox, NProgress, NPagination, useDialog } from 'naive-ui'
 
@@ -76,7 +78,7 @@ watch(
 )
 const isTaskPage = computed(() => route.path.startsWith('/task'))
 const taskBackground = useTaskBackgroundConfig()
-const showTaskBackgroundUnderlay = computed(() => isTaskPage.value && taskBackground.isTaskBackgroundConfigured.value)
+const showFullWindowBackground = computed(() => isTaskPage.value && taskBackground.hasCustomBackgroundImagePath.value)
 const preferenceActions = providePreferenceActions()
 const activePreferenceActions = computed(() =>
   preferenceActions.value?.routeName === route.name ? preferenceActions.value : null,
@@ -109,12 +111,16 @@ const taskPaginationPageSize = computed(() => taskStore.taskPagination.pageSize)
 const taskPaginationPageCount = computed(() => taskStore.currentTaskPageCount())
 const taskPaginationPageSizes = [5, 20, 40, 80, 100]
 const showSpeedLimitButton = computed(() => preferenceStore.config.speedLimitButtonVisible)
+const colorTokens = useAppColorTokens()
+const taskPaginationOpacityPercent = computed(() =>
+  opacityPercentToCssPercent(preferenceStore.config.taskPaginationOpacity, DEFAULT_APP_CONFIG.taskPaginationOpacity),
+)
 const taskPaginationControlStyle = computed(() => ({
-  '--task-pagination-control-opacity-percent': opacityPercentToCssPercent(
-    preferenceStore.config.taskPaginationOpacity,
-    DEFAULT_APP_CONFIG.taskPaginationOpacity,
-  ),
+  '--task-pagination-control-opacity-percent': taskPaginationOpacityPercent.value,
 }))
+const taskPaginationThemeOverrides = computed(() =>
+  buildTaskPaginationTheme(colorTokens.value, taskPaginationOpacityPercent.value),
+)
 // ── Auto-shutdown countdown state ──────────────────────────────────
 const showShutdownCountdown = ref(false)
 const shutdownCountdown = ref(60)
@@ -801,7 +807,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div id="container" :class="{ 'task-background-active': showTaskBackgroundUnderlay }">
+  <div id="container" :class="{ 'task-background-image-active': showFullWindowBackground }">
     <!-- Minimal progress bar during engine initialization / restart -->
     <Transition name="engine-slide">
       <div v-if="engineStore.isBusy" class="engine-banner">
@@ -812,11 +818,13 @@ onUnmounted(() => {
     <div class="sidebar-heading" data-tauri-drag-region>
       <h2 data-tauri-drag-region>{{ t('app.task-list') }}</h2>
     </div>
-    <AppSidebar :compact="compactNavigation" class="sidebar-slot" @show-about="openAbout" />
-    <TaskBackgroundLayer
-      :show="isTaskPage"
-      :show-default-icon="!(preferenceStore.config.showLogoWhenEmpty && taskStore.isCurrentListEmpty)"
+    <AppSidebar
+      :compact="compactNavigation"
+      :transparent="showFullWindowBackground"
+      class="sidebar-slot"
+      @show-about="openAbout"
     />
+    <TaskBackgroundLayer :show="isTaskPage" />
     <header class="page-header" data-tauri-drag-region>
       <div class="page-title-slot" data-tauri-drag-region>
         <Transition name="page-title" mode="out-in">
@@ -863,6 +871,7 @@ onUnmounted(() => {
           :inert="!isTaskPage"
         >
           <NPagination
+            :theme-overrides="taskPaginationThemeOverrides"
             :page="taskPaginationPage"
             :page-size="taskPaginationPageSize"
             :page-count="taskPaginationPageCount"
@@ -973,6 +982,8 @@ onUnmounted(() => {
 .window-chrome {
   grid-column: 1 / -1;
   grid-row: 1;
+  position: relative;
+  z-index: 1;
   background: linear-gradient(
     to right,
     var(--sidebar-bg) 0 var(--sidebar-width),
@@ -982,6 +993,8 @@ onUnmounted(() => {
 .sidebar-heading {
   grid-column: 1;
   grid-row: 2;
+  position: relative;
+  z-index: 1;
   padding-inline: 20px;
   overflow: hidden;
   background: var(--sidebar-bg);
@@ -1009,11 +1022,19 @@ onUnmounted(() => {
 .sidebar-slot {
   grid-column: 1;
   grid-row: 3 / 5;
+  position: relative;
+  z-index: 1;
   min-height: 0;
+}
+.task-background-image-active .window-chrome,
+.task-background-image-active .sidebar-heading {
+  background: transparent;
 }
 .page-header {
   grid-column: 2;
   grid-row: 2;
+  position: relative;
+  z-index: 1;
   margin-inline: var(--content-gutter);
   padding-bottom: 12px;
   align-items: flex-end;
@@ -1041,7 +1062,7 @@ onUnmounted(() => {
   position: relative;
   z-index: 1;
 }
-.task-background-active .content {
+.task-background-image-active .content {
   background: transparent;
 }
 .content-footer {
@@ -1049,6 +1070,8 @@ onUnmounted(() => {
   min-height: 64px;
   grid-column: 2;
   grid-row: 4;
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;

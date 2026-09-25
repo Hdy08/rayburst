@@ -11,7 +11,6 @@ export interface GeneralForm {
   taskCardMode: AppConfig['taskCardMode']
   taskCardOpacity: number
   taskListSelectedBackgroundOpacity: number
-  taskListWatermark: boolean
   backgroundImagePath: string
   backgroundOpacity: number
   taskPaginationOpacity: number
@@ -49,7 +48,6 @@ export function buildGeneralForm(config: AppConfig): GeneralForm {
     taskCardMode: config.taskCardMode,
     taskCardOpacity: config.taskCardOpacity,
     taskListSelectedBackgroundOpacity: config.taskListSelectedBackgroundOpacity,
-    taskListWatermark: config.taskListWatermark,
     backgroundImagePath: config.backgroundImagePath,
     backgroundOpacity: config.backgroundOpacity,
     taskPaginationOpacity: config.taskPaginationOpacity,

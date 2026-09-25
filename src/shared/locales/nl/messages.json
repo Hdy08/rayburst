@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Dekking van paginatieknoppen",
     "task-list-selected-background-opacity": "Opaciteit van categorieknoppen",
     "speed-limit-button": "Snelheidslimietknop",
-    "speed-limit-button-opacity": "Dekking van snelheidslimietknop",
-    "task-list-watermark": "Watermerk van takenlijst"
+    "speed-limit-button-opacity": "Dekking van snelheidslimietknop"
   },
   "task": {
     "scope-all": "Alle",

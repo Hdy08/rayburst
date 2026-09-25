@@ -13,7 +13,7 @@ import { opacityPercentToCssPercent } from '@shared/utils/opacity'
 import SidebarCount from './SidebarCount.vue'
 import { useTaskDestinations } from './navigation'
 
-defineProps<{ compact?: boolean }>()
+defineProps<{ compact?: boolean; transparent?: boolean }>()
 
 const emit = defineEmits<{ 'show-about': [] }>()
 const { t } = useI18n()
@@ -33,7 +33,7 @@ const sidebarStyle = computed(() => ({
 <template>
   <nav
     class="sidebar"
-    :class="{ compact, counts: preferences.config.sidebarTaskCounts }"
+    :class="{ compact, counts: preferences.config.sidebarTaskCounts, 'sidebar--transparent': transparent }"
     :style="sidebarStyle"
     :aria-label="t('app.task-list')"
   >
@@ -96,6 +96,9 @@ const sidebarStyle = computed(() => ({
   padding: 8px;
   gap: 16px;
   background: var(--sidebar-bg);
+}
+.sidebar--transparent {
+  background: transparent;
 }
 .sidebar-scopes {
   flex: 1;

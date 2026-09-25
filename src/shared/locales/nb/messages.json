@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Opasitet for pagineringsknapper",
     "task-list-selected-background-opacity": "Opasitet for kategoriknapper",
     "speed-limit-button": "Fartsgrenseknapp",
-    "speed-limit-button-opacity": "Opasitet for fartsgrenseknapp",
-    "task-list-watermark": "Vannmerke for oppgaveliste"
+    "speed-limit-button-opacity": "Opasitet for fartsgrenseknapp"
   },
   "task": {
     "scope-all": "Alle",

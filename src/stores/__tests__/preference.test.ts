@@ -53,7 +53,6 @@ describe('PreferenceStore', () => {
     const customization = {
       taskCardOpacity: 78,
       taskListSelectedBackgroundOpacity: 63,
-      taskListWatermark: false,
       backgroundImagePath: 'C:\\Users\\me\\Pictures\\background.png',
       backgroundOpacity: 54,
       taskPaginationOpacity: 82,

@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Pagination button opacity",
     "task-list-selected-background-opacity": "Category button opacity",
     "speed-limit-button": "Speed limit button",
-    "speed-limit-button-opacity": "Speed limit button opacity",
-    "task-list-watermark": "Task list watermark"
+    "speed-limit-button-opacity": "Speed limit button opacity"
   },
   "task": {
     "scope-all": "All",

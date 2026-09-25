@@ -207,7 +207,6 @@ export const DEFAULT_APP_CONFIG = {
   taskCardMode: 'full' as const,
   taskCardOpacity: 100,
   taskListSelectedBackgroundOpacity: 100,
-  taskListWatermark: true,
   backgroundImagePath: '',
   backgroundOpacity: 50,
   taskPaginationOpacity: 100,

@@ -607,8 +607,7 @@
     "task-pagination-opacity": "翻頁按鈕不透明度",
     "task-list-selected-background-opacity": "分類按鈕不透明度",
     "speed-limit-button": "速度限制按鈕",
-    "speed-limit-button-opacity": "速度限制按鈕不透明度",
-    "task-list-watermark": "任務列表水印"
+    "speed-limit-button-opacity": "速度限制按鈕不透明度"
   },
   "task": {
     "scope-all": "全部",

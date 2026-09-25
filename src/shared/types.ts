@@ -412,7 +412,6 @@ export interface AppConfig {
   taskCardMode: 'full' | 'compact'
   taskCardOpacity: number
   taskListSelectedBackgroundOpacity: number
-  taskListWatermark: boolean
   backgroundImagePath: string
   backgroundOpacity: number
   taskPaginationOpacity: number

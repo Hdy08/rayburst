@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Opacità dei pulsanti di paginazione",
     "task-list-selected-background-opacity": "Opacità dei pulsanti categoria",
     "speed-limit-button": "Pulsante limite velocità",
-    "speed-limit-button-opacity": "Opacità del pulsante limite velocità",
-    "task-list-watermark": "Filigrana elenco attività"
+    "speed-limit-button-opacity": "Opacità del pulsante limite velocità"
   },
   "task": {
     "scope-all": "Tutte",

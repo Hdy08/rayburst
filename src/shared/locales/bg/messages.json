@@ -607,8 +607,7 @@
     "task-pagination-opacity": "Непрозрачност на бутоните за странициране",
     "task-list-selected-background-opacity": "Непрозрачност на бутоните за категории",
     "speed-limit-button": "Бутон за ограничение на скоростта",
-    "speed-limit-button-opacity": "Непрозрачност на бутона за ограничение на скоростта",
-    "task-list-watermark": "Воден знак на списъка със задачи"
+    "speed-limit-button-opacity": "Непрозрачност на бутона за ограничение на скоростта"
   },
   "task": {
     "scope-all": "Всички",
