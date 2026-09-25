@@ -130,8 +130,7 @@ export const useTaskStore = defineStore('task', () => {
     const sameList = currentList.value === scope
     currentList.value = scope
     if (!sameList) {
-      const tab = currentTaskTab()
-      if (taskPagination[tab].loaded) refreshCurrentTaskPageCount()
+      publishSnapshot()
     }
     await fetchList()
   }

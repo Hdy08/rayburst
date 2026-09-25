@@ -428,7 +428,7 @@ describe('TaskStore', () => {
     expect(store.taskPagination.pageSize).toBe(2)
   })
 
-  it('keeps the previous page count while a different tab is loading', async () => {
+  it('shows the target page count and empty state while its history is loading', async () => {
     const activeTasks = [
       makeMockTask('a1'),
       makeMockTask('a2'),
@@ -442,8 +442,8 @@ describe('TaskStore', () => {
     expect(store.currentTaskPageCount()).toBe(3)
 
     mockHistoryFns.getRecords.mockImplementationOnce(async () => {
-      expect(store.taskList.map((task) => task.gid).sort()).toEqual(activeTasks.map((task) => task.gid).sort())
-      expect(store.currentTaskPageCount()).toBe(3)
+      expect(store.taskList).toEqual([])
+      expect(store.currentTaskPageCount()).toBe(1)
       return [
         { gid: 'b1', name: 'b1.zip', status: 'complete' } as HistoryRecord,
         { gid: 'b2', name: 'b2.zip', status: 'complete' } as HistoryRecord,
@@ -608,19 +608,50 @@ describe('TaskStore', () => {
 
   // ─── changeCurrentList ──────────────────────────────────
 
-  it('changeCurrentList keeps the current list visible until the target tab data arrives', async () => {
-    store.taskList = [makeMockTask('old')]
-    mockHistoryFns.getRecords.mockImplementationOnce(async () => {
-      expect(store.taskList.map((task) => task.gid)).toEqual(['old'])
-      return [{ gid: 'fresh', name: 'fresh.zip', status: 'complete' } as HistoryRecord]
-    })
-    mockApi.fetchTaskList.mockResolvedValueOnce([])
+  it('clears cards immediately when switching to an empty scope before RPC responds', async () => {
+    mockApi.fetchTaskList.mockResolvedValueOnce([makeMockTask('active')])
+    await store.fetchList()
+    expect(store.taskList.map((task) => task.gid)).toEqual(['active'])
 
-    await store.changeCurrentList('completed')
+    let resolveFetch!: (tasks: Aria2Task[]) => void
+    mockApi.fetchTaskList.mockImplementationOnce(
+      () =>
+        new Promise<Aria2Task[]>((resolve) => {
+          resolveFetch = resolve
+        }),
+    )
+    const switching = store.changeCurrentList('completed')
 
     expect(store.currentList).toBe('completed')
-    expect(mockHistoryFns.getRecords).toHaveBeenCalledWith()
-    expect(store.taskList.map((task) => task.gid)).toEqual(['fresh'])
+    expect(store.taskList).toEqual([])
+    expect(store.isCurrentListEmpty).toBe(true)
+
+    resolveFetch([makeMockTask('active')])
+    await switching
+    expect(store.taskList).toEqual([])
+  })
+
+  it('shows cached target cards immediately while the next RPC read is pending', async () => {
+    mockHistoryFns.getRecords.mockResolvedValue([
+      { gid: 'completed', name: 'completed.zip', status: 'complete' } as HistoryRecord,
+    ])
+    mockApi.fetchTaskList.mockResolvedValueOnce([makeMockTask('active')])
+    await store.fetchList()
+    await vi.waitFor(() => expect(store.taskCounts.completed).toBe(1))
+
+    let resolveFetch!: (tasks: Aria2Task[]) => void
+    mockApi.fetchTaskList.mockImplementationOnce(
+      () =>
+        new Promise<Aria2Task[]>((resolve) => {
+          resolveFetch = resolve
+        }),
+    )
+    const switching = store.changeCurrentList('completed')
+
+    expect(store.taskList.map((task) => task.gid)).toEqual(['completed'])
+    resolveFetch([makeMockTask('active')])
+    await switching
+    expect(store.taskList.map((task) => task.gid)).toEqual(['completed'])
   })
 
   it('ignores a stale response from the previous scope', async () => {
