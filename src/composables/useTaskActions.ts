@@ -5,29 +5,39 @@
  * Uses dependency injection for all Vue/Pinia dependencies — stores,
  * i18n, dialog, and message are passed in via the options object.
  */
-import { ref, type Ref, h } from 'vue'
-import { getTaskUri, getTaskDisplayName, resolveOpenTarget, canRestart, writeAppClipboardText } from '@shared/utils'
+import { finishMedia, saveSession } from '@/api/aria2'
+import { canFinishMedia } from '@shared/utils/media'
+import { ref, h } from 'vue'
+import {
+  getTaskUri,
+  getTaskName,
+  resolveOpenTarget,
+  canRestart,
+  writeAppClipboardText,
+  getSharingResultLabelKey,
+  getTaskSharingKind,
+} from '@shared/utils'
 import { getErrorMessage } from '@shared/utils/errorMessage'
 import { invoke } from '@tauri-apps/api/core'
-import { deleteTaskFiles } from '@/composables/useFileDelete'
-import { resolveTaskFilePath, requestFileRecheck } from '@/composables/useArchivedPaths'
-import { TASK_STATUS } from '@shared/constants'
+import { resolveTaskFilePath, requestFileRecheck } from '@/composables/useTaskPaths'
 import { logger } from '@shared/logger'
 import { NCheckbox, useDialog } from 'naive-ui'
-import type { Aria2Task, AppConfig } from '@shared/types'
+import type { Aria2Task, AppConfig, TaskDeletionOptions } from '@shared/types'
 
 interface TaskActionsDeps {
   taskStore: {
     pauseTask: (task: Aria2Task) => Promise<unknown>
     resumeTask: (task: Aria2Task) => Promise<unknown>
-    removeTask: (task: Aria2Task) => Promise<unknown>
+    finishSharing: (task: Aria2Task) => Promise<unknown>
+    removeTask: (task: Aria2Task, options?: TaskDeletionOptions) => Promise<unknown>
     removeTaskRecord: (task: Aria2Task) => Promise<unknown>
-    restartTask: (task: Aria2Task) => Promise<unknown>
-    stopSharing: (task: Aria2Task) => Promise<unknown>
+    retryTask: (task: Aria2Task) => Promise<unknown>
+    redownloadTask: (task: Aria2Task) => Promise<unknown>
     showTaskDetail: (task: Aria2Task) => void
     fetchList: () => Promise<unknown>
     taskList: Aria2Task[]
   }
+  requestMagnetSelection: (gid: string) => void
   preferenceConfig: () => AppConfig
   t: (key: string, params?: Record<string, unknown>) => string
   dialog: ReturnType<typeof useDialog>
@@ -37,14 +47,20 @@ interface TaskActionsDeps {
     warning: (msg: string) => void
     info: (msg: string) => void
   }
-  stoppingGids: Ref<string[]>
 }
 
 export function useTaskActions(deps: TaskActionsDeps) {
-  const { taskStore, preferenceConfig, t, dialog, message, stoppingGids } = deps
+  const { taskStore, preferenceConfig, t, dialog, message, requestMagnetSelection } = deps
+
+  const deleteFilesLabel = () =>
+    t(
+      preferenceConfig().fileDeletionMode === 'permanent'
+        ? 'task.delete-local-files-permanent-label'
+        : 'task.delete-local-files-trash-label',
+    )
 
   function handlePauseTask(task: Aria2Task) {
-    const taskName = getTaskDisplayName(task, { defaultName: 'Unknown' })
+    const taskName = getTaskName(task, { defaultName: 'Unknown' })
     taskStore
       .pauseTask(task)
       .then(() => message.success(t('task.pause-task-success', { taskName })))
@@ -55,47 +71,92 @@ export function useTaskActions(deps: TaskActionsDeps) {
   }
 
   function handleResumeTask(task: Aria2Task) {
-    const taskName = getTaskDisplayName(task, { defaultName: 'Unknown' })
-    const { COMPLETE, ERROR, REMOVED } = TASK_STATUS
-    if (task.status === ERROR || task.status === COMPLETE || task.status === REMOVED) {
-      if (!canRestart(task)) {
-        message.warning(t('task.restart-not-available'))
-        return
-      }
-      taskStore
-        .restartTask(task)
-        .then(() => message.success(t('task.restart-task-success', { taskName })))
-        .catch((e) => {
-          logger.warn('TaskView.restartTask', getErrorMessage(e))
-          message.error(t('task.restart-task-fail', { taskName }))
-        })
-    } else {
-      taskStore
-        .resumeTask(task)
-        .then((resumed) => {
-          if (resumed !== false) message.success(t('task.resume-task-success', { taskName }))
-        })
-        .catch((e) => {
-          logger.warn('TaskView.resumeTask', getErrorMessage(e))
-          message.error(t('task.resume-task-fail', { taskName }))
-        })
+    const taskName = getTaskName(task, { defaultName: 'Unknown' })
+    taskStore
+      .resumeTask(task)
+      .then((resumed) => {
+        if (resumed !== false) message.success(t('task.resume-task-success', { taskName }))
+      })
+      .catch((e) => {
+        logger.warn('TaskView.resumeTask', getErrorMessage(e))
+        message.error(t('task.resume-task-fail', { taskName }))
+      })
+  }
+
+  function handleRetryTask(task: Aria2Task) {
+    const taskName = getTaskName(task, { defaultName: 'Unknown' })
+    if (!canRestart(task)) {
+      message.warning(t('task.restart-not-available'))
+      return
+    }
+    taskStore
+      .retryTask(task)
+      .then(() => message.success(t('task.retry-task-success', { taskName })))
+      .catch((error) => {
+        logger.warn('TaskView.retryTask', getErrorMessage(error))
+        message.error(t('task.retry-task-fail', { taskName }))
+      })
+  }
+
+  function handleRedownloadTask(task: Aria2Task) {
+    const taskName = getTaskName(task, { defaultName: 'Unknown' })
+    if (!canRestart(task)) {
+      message.warning(t('task.restart-not-available'))
+      return
+    }
+    taskStore
+      .redownloadTask(task)
+      .then(() => message.success(t('task.restart-task-success', { taskName })))
+      .catch((error) => {
+        logger.warn('TaskView.redownloadTask', getErrorMessage(error))
+        message.error(t('task.restart-task-fail', { taskName }))
+      })
+  }
+
+  const finishingMedia = new Set<string>()
+  async function handleFinishMedia(task: Aria2Task) {
+    if (!canFinishMedia(task) || finishingMedia.has(task.gid)) return
+    finishingMedia.add(task.gid)
+    try {
+      await finishMedia(task.gid)
+      await saveSession()
+      await taskStore.fetchList()
+    } catch (error) {
+      logger.warn('TaskView.finishMedia', getErrorMessage(error))
+      message.error(getErrorMessage(error))
+    } finally {
+      finishingMedia.delete(task.gid)
     }
   }
 
+  function handleFinishSharing(task: Aria2Task) {
+    const taskName = getTaskName(task, { defaultName: 'Unknown' })
+    const kind = getTaskSharingKind(task)
+    if (!kind) return
+    taskStore
+      .finishSharing(task)
+      .then(() => message.success(t(getSharingResultLabelKey(kind, 'success'), { taskName })))
+      .catch((error) => {
+        logger.warn('TaskView.finishSharing', getErrorMessage(error))
+        message.error(t(getSharingResultLabelKey(kind, 'fail'), { taskName }))
+      })
+  }
+
   function handleDeleteTask(task: Aria2Task) {
-    const noConfirm = preferenceConfig()?.noConfirmBeforeDeleteTask
+    const config = preferenceConfig()
+    const noConfirm = config.noConfirmBeforeDeleteTask
     if (noConfirm) {
-      const alsoDeleteFiles = preferenceConfig()?.deleteFilesWhenSkipConfirm
+      const alsoDeleteFiles = config.deleteFilesWhenSkipConfirm
       taskStore
-        .removeTask(task)
-        .then(async () => {
-          if (alsoDeleteFiles) await deleteTaskFiles(task)
+        .removeTask(task, { deleteMode: alsoDeleteFiles ? config.fileDeletionMode : undefined })
+        .catch((error: unknown) => {
+          logger.error('TaskView.deleteTask', error)
+          message.error(t('task.delete-task-fail', { taskName: getTaskName(task, { defaultName: 'Unknown' }) }))
         })
-        .catch((e: unknown) => logger.error('TaskView', e))
       return
     }
     const deleteFiles = ref(false)
-    const name = getTaskDisplayName(task, { defaultName: 'Unknown' })
+    const name = getTaskName(task, { defaultName: 'Unknown' })
     const d = dialog.error({
       title: t('task.delete-task'),
       content: () =>
@@ -109,7 +170,7 @@ export function useTaskActions(deps: TaskActionsDeps) {
                 deleteFiles.value = v
               },
             },
-            { default: () => t('task.delete-task-label') },
+            { default: deleteFilesLabel },
           ),
         ]),
       positiveText: t('app.yes'),
@@ -119,12 +180,8 @@ export function useTaskActions(deps: TaskActionsDeps) {
         d.negativeButtonProps = { disabled: true }
         d.closable = false
         d.maskClosable = false
-        await new Promise((r) => setTimeout(r, 50))
         try {
-          await taskStore.removeTask(task)
-          if (deleteFiles.value) {
-            await deleteTaskFiles(task)
-          }
+          await taskStore.removeTask(task, { deleteMode: deleteFiles.value ? config.fileDeletionMode : undefined })
           message.success(t('task.delete-task-success', { taskName: name }))
         } catch (e) {
           logger.error('TaskView.deleteTask', e)
@@ -134,61 +191,7 @@ export function useTaskActions(deps: TaskActionsDeps) {
     })
   }
 
-  function handleDeleteRecord(task: Aria2Task) {
-    const noConfirm = preferenceConfig()?.noConfirmBeforeDeleteTask
-    if (noConfirm) {
-      const alsoDeleteFiles = preferenceConfig()?.deleteFilesWhenSkipConfirm
-      const taskRef = task
-      taskStore
-        .removeTaskRecord(task)
-        .then(async () => {
-          if (alsoDeleteFiles) await deleteTaskFiles(taskRef)
-          message.success(
-            t('task.remove-record-success', { taskName: getTaskDisplayName(taskRef, { defaultName: 'Unknown' }) }),
-          )
-        })
-        .catch((e: unknown) => logger.error('TaskView.deleteRecord', e))
-      return
-    }
-    const deleteFiles = ref(false)
-    const name = getTaskDisplayName(task, { defaultName: 'Unknown' })
-    const d = dialog.error({
-      title: t('task.delete-task'),
-      content: () =>
-        h('div', {}, [
-          h('p', { class: 'technical-text-wrap', style: 'margin: 0 0 12px;' }, name),
-          h(
-            NCheckbox,
-            {
-              checked: deleteFiles.value,
-              'onUpdate:checked': (v: boolean) => {
-                deleteFiles.value = v
-              },
-            },
-            { default: () => t('task.delete-task-label') },
-          ),
-        ]),
-      positiveText: t('app.yes'),
-      negativeText: t('app.no'),
-      onPositiveClick: async () => {
-        d.loading = true
-        d.negativeButtonProps = { disabled: true }
-        d.closable = false
-        d.maskClosable = false
-        await new Promise((r) => setTimeout(r, 50))
-        try {
-          if (deleteFiles.value) {
-            await deleteTaskFiles(task)
-          }
-          await taskStore.removeTaskRecord(task)
-          message.success(t('task.delete-task-success', { taskName: name }))
-        } catch (e) {
-          logger.error('TaskView.deleteRecord', e)
-          message.error(t('task.delete-task-fail', { taskName: name }))
-        }
-      },
-    })
-  }
+  const handleDeleteRecord = handleDeleteTask
 
   async function handleCopyLink(task: Aria2Task) {
     const uri = getTaskUri(task).trim()
@@ -263,29 +266,23 @@ export function useTaskActions(deps: TaskActionsDeps) {
     }
   }
 
-  async function handleStopSharing(task: Aria2Task) {
-    if (stoppingGids.value.includes(task.gid)) return
-    stoppingGids.value = [...stoppingGids.value, task.gid]
-    try {
-      await taskStore.stopSharing(task)
-      stoppingGids.value = stoppingGids.value.filter((g) => g !== task.gid)
-      message.success(t('task.stop-sharing-success'))
-      await taskStore.fetchList()
-    } catch (e) {
-      logger.warn('[TaskView] stopSharing failed:', String(e))
-      stoppingGids.value = stoppingGids.value.filter((g) => g !== task.gid)
-    }
+  function handleSelectFiles(task: Aria2Task) {
+    requestMagnetSelection(task.gid)
   }
 
   return {
     handlePauseTask,
     handleResumeTask,
+    handleRetryTask,
+    handleRedownloadTask,
+    handleFinishSharing,
+    handleFinishMedia,
     handleDeleteTask,
     handleDeleteRecord,
     handleCopyLink,
     handleShowInfo,
     handleShowInFolder,
     handleOpenFile,
-    handleStopSharing,
+    handleSelectFiles,
   }
 }

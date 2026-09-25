@@ -1,24 +1,21 @@
 <script setup lang="ts">
 /** @fileoverview Stable task-list background layer kept outside route transitions. */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useTheme } from '@/composables/useTheme'
 import { useLocalImageObjectUrl } from '@/composables/useLocalImageObjectUrl'
 import { useTaskBackgroundConfig } from '@/composables/useTaskBackgroundConfig'
 import { logger } from '@shared/logger'
 import { calculateCanvasPixelSize, calculateCoverSourceRect } from '@shared/utils/backgroundCanvas'
-import watermarkDark from '@/assets/logo-bolt-dark.png'
-import watermarkLight from '@/assets/logo-bolt-light.png'
 
-const props = defineProps<{ show: boolean }>()
+const props = withDefaults(defineProps<{ show: boolean; showDefaultIcon?: boolean }>(), { showDefaultIcon: true })
 
-const { isDark } = useTheme()
 const taskBackground = useTaskBackgroundConfig()
-const watermarkSrc = computed(() => (isDark.value ? watermarkLight : watermarkDark))
 const customBackgroundImageUrl = useLocalImageObjectUrl(() =>
   props.show ? taskBackground.backgroundImagePath.value : '',
 )
 const showCustomBackgroundImage = computed(() => props.show && customBackgroundImageUrl.value.length > 0)
-const showDefaultBackgroundIcon = computed(() => props.show && taskBackground.showDefaultBackgroundIcon.value)
+const showDefaultBackgroundIcon = computed(
+  () => props.show && props.showDefaultIcon && taskBackground.showDefaultBackgroundIcon.value,
+)
 const showTaskBackground = computed(() => showCustomBackgroundImage.value || showDefaultBackgroundIcon.value)
 const backgroundCanvas = ref<HTMLCanvasElement | null>(null)
 const backgroundLayerStyle = computed(() => ({
@@ -135,7 +132,7 @@ onBeforeUnmount(() => {
     <Transition name="task-background-content">
       <div v-if="showTaskBackground" class="task-background-content">
         <canvas v-if="showCustomBackgroundImage" ref="backgroundCanvas" class="task-background-image" />
-        <img v-else :src="watermarkSrc" alt="" class="task-background-icon" draggable="false" />
+        <div v-else class="task-background-icon" />
       </div>
     </Transition>
   </div>
@@ -143,21 +140,15 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .task-background-layer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  grid-column: 2;
+  grid-row: 3;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(
-    90deg,
-    var(--aside-bg) 0 var(--aside-width),
-    var(--subnav-bg) var(--aside-width)
-      calc(var(--aside-width) + var(--task-background-subnav-width, var(--subnav-width))),
-    var(--main-bg) calc(var(--aside-width) + var(--task-background-subnav-width, var(--subnav-width))) 100%
-  );
+  background: var(--main-bg);
   pointer-events: none;
   user-select: none;
   z-index: 0;
@@ -179,6 +170,9 @@ onBeforeUnmount(() => {
 .task-background-icon {
   max-width: 480px;
   width: 80%;
+  aspect-ratio: 1;
+  background: color-mix(in srgb, var(--m3-on-surface-variant) 85%, var(--m3-primary));
+  mask: url('/logo.svg') center / contain no-repeat;
   opacity: var(--task-background-default-icon-opacity);
   user-select: none;
   -webkit-user-drag: none;
@@ -199,15 +193,5 @@ onBeforeUnmount(() => {
 .task-background-content-enter-from,
 .task-background-content-leave-to {
   opacity: 0;
-}
-@media (max-width: 799px) {
-  .task-background-layer {
-    --task-background-subnav-width: var(--subnav-width-compact);
-  }
-}
-@media (max-width: 600px) {
-  .task-background-layer {
-    --task-background-subnav-width: 0px;
-  }
 }
 </style>

@@ -20,6 +20,9 @@ coverage
 # Tauri / Rust build artifacts
 src-tauri/target
 src-tauri/gen
+src-tauri/generated-icons/
+src-tauri/generated-binaries/*
+!src-tauri/generated-binaries/README.md
 
 # TypeScript build info
 *.tsbuildinfo
@@ -45,10 +48,6 @@ Thumbs.db
 
 # Lock files (use pnpm-lock.yaml only)
 package-lock.json
-
-# Legacy reference codebases
-motrix-legacy/
-motrix-very-legacy/
 
 # Tauri generated files
 src-tauri/gen/

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>Page not found — Rayburst</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/img/logo.svg" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+        background: #f2ecf1;
+        color: #1d1b1e;
+      }
+      body {
+        display: grid;
+        min-height: 100svh;
+        margin: 0;
+        place-items: center;
+      }
+      main {
+        max-width: 32rem;
+        padding: 2rem;
+        text-align: center;
+      }
+      h1 {
+        font-size: clamp(2rem, 6vw, 3rem);
+        letter-spacing: -0.04em;
+      }
+      p {
+        line-height: 1.6;
+      }
+      a {
+        color: #704ba8;
+        text-underline-offset: 0.25em;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          background: #1d1b1e;
+          color: #e7e1e6;
+        }
+        a {
+          color: #d6baff;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/assets/img/logo.svg" alt="Rayburst" width="64" height="64" />
+      <h1>Page not found.</h1>
+      <p>This address does not point to a page on this site.</p>
+      <a href="/">Back to Rayburst</a>
+    </main>
+  </body>
+</html>

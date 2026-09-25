@@ -1,4 +1,4 @@
-# Motrix Next Contributing Guide
+# Rayburst Contributing Guide
 
 Maintained by [@AnInsomniacy](https://github.com/AnInsomniacy). PRs and issues are welcome!
 
@@ -15,34 +15,39 @@ Before you start contributing, make sure you understand [GitHub flow](https://gu
 ### Getting Started
 
 ```bash
-git clone https://github.com/AnInsomniacy/motrix-next.git
-cd motrix-next
+git clone https://github.com/AnInsomniacy/rayburst.git
+cd rayburst
 pnpm install
 pnpm tauri dev    # Start dev server (Tauri + Vite)
 ```
 
+Development mode does not register Native Messaging hosts or change URL protocol
+associations. Start the desktop manually when testing the extension API. Test
+browser activation with an installed build; development must not replace its
+system registrations. This uses Tauri's development mode, not the Rust debug profile.
+
 Rust backend (standalone):
 
 ```bash
+pnpm build:native-launcher
 cd src-tauri
-cargo check --all-targets
-cargo test --all-targets
+cargo check --workspace --all-targets
+cargo test --workspace --all-targets
 ```
 
 ## ✅ Code Quality
 
-All checks must pass before PR merge:
+CI runs the checks below. Run the relevant subset locally before PR review:
 
 ```bash
 pnpm lint                                      # ESLint
 pnpm format:check                              # Prettier formatting
-npx vue-tsc --noEmit                           # TypeScript strict mode
 pnpm test                                      # Vitest
-npx vite build                                 # Frontend production build
-cd src-tauri && cargo fmt -- --check           # Rust formatting
-cd src-tauri && cargo clippy --all-targets -- -D warnings
-cd src-tauri && cargo check --all-targets
-cd src-tauri && cargo test --all-targets
+pnpm check:repo                                # Locale structure and placeholders
+pnpm build                                     # TypeScript check and frontend bundle
+cd src-tauri && cargo fmt --all -- --check     # Rust formatting
+cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings
+cd src-tauri && cargo test --workspace --all-targets
 ```
 
 Pre-commit hooks (husky + lint-staged) auto-run `eslint --fix` and `prettier --write` on staged files.
@@ -61,7 +66,7 @@ Pre-commit hooks (husky + lint-staged) auto-run `eslint --fix` and `prettier --w
 
 ## 🧪 Testing
 
-- Add focused tests for new utilities, guards, business rules, and regression fixes.
+- Test risky business rules, data boundaries and regressions. Avoid duplicate cases, trivial forwarding tests and coverage quotas.
 - Test files live alongside source: `__tests__/filename.test.ts`.
 - Runtime type guards (in `guards.ts`) validate all external API responses.
 
@@ -69,30 +74,17 @@ Pre-commit hooks (husky + lint-staged) auto-run `eslint --fix` and `prettier --w
 
 First you need to determine the English abbreviation of a language as **locale**, such as `en-US`. This locale value should strictly refer to the [Chromium Source Code](https://source.chromium.org/chromium/chromium/src/+/main:ui/base/l10n/l10n_util.cc).
 
-The internationalization of Motrix Next uses [vue-i18n](https://vue-i18n.intlify.dev/).
+The internationalization of Rayburst uses [vue-i18n](https://vue-i18n.intlify.dev/).
 
-The configuration files are divided by **locale** under `src/shared/locales/`, such as `src/shared/locales/en-US` and `src/shared/locales/zh-CN`.
-
-There are language files in each directory organized by business module:
-
-- `about.js`
-- `app.js`
-- `edit.js`
-- `help.js`
-- `index.js`
-- `menu.js`
-- `preferences.js`
-- `subnav.js`
-- `task.js`
-- `window.js`
+Desktop translations live in `src/shared/locales/<locale>/messages.json`. Each file contains the same nested namespaces, with `en-US` as the canonical schema and fallback. Locale metadata is registered once in `src/shared/locales/catalog.json`.
 
 ### Adding a New Language
 
-1. Create a new directory under `src/shared/locales/` with the locale code (e.g. `src/shared/locales/de/`)
-2. Copy the files from `src/shared/locales/en-US/` as a template
-3. Translate each file
-4. Register the locale in `src/shared/locales/index.js`
-5. Submit a Pull Request
+1. Create `src/shared/locales/<locale>/messages.json` from the en-US resource
+2. Translate every value without changing keys or placeholders
+3. Register the locale in `src/shared/locales/catalog.json`
+4. Add the native Rust resource at `src-tauri/locales/<locale>.json`
+5. Run `pnpm lint`, `pnpm check:repo`, and `npx vue-tsc --noEmit`
 
 ## 💬 Commit Messages
 
@@ -143,7 +135,7 @@ docs: update i18n translation guide
 
 ### Before you push
 
-Run the full check suite locally. PRs that fail any of these will not be reviewed:
+Run checks that cover your changes and report what you verified. Required CI must pass:
 
 ```bash
 pnpm lint
@@ -151,10 +143,9 @@ pnpm format:check
 npx vue-tsc --noEmit
 pnpm test
 npx vite build
-cd src-tauri && cargo fmt -- --check
-cd src-tauri && cargo clippy --all-targets -- -D warnings
-cd src-tauri && cargo check --all-targets
-cd src-tauri && cargo test --all-targets
+cd src-tauri && cargo fmt --all -- --check
+cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings
+cd src-tauri && cargo test --workspace --all-targets
 ```
 
 ### i18n changes

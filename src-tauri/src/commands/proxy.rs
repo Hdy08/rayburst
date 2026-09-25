@@ -26,12 +26,20 @@ pub struct SystemProxyInfo {
     pub is_socks: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemProxyDetection {
+    #[serde(flatten)]
+    proxy: SystemProxyInfo,
+    unsupported_bypass: Vec<String>,
+}
+
 /// Detects the system-level HTTP proxy configuration.
 ///
 /// Returns `Ok(Some(info))` when a proxy is configured and enabled,
 /// `Ok(None)` when no proxy is detected or the platform is unsupported.
 #[tauri::command]
-pub fn get_system_proxy() -> Result<Option<SystemProxyInfo>, AppError> {
+pub fn get_system_proxy() -> Result<Option<SystemProxyDetection>, AppError> {
     log::info!("proxy:detect started");
     let result = get_system_proxy_impl();
     match &result {
@@ -43,7 +51,16 @@ pub fn get_system_proxy() -> Result<Option<SystemProxyInfo>, AppError> {
         Ok(None) => log::info!("proxy:detect result=not-found"),
         Err(e) => log::warn!("proxy:detect result=error {:?}", e),
     }
-    result
+    result.map(|info| {
+        info.map(|mut proxy| {
+            let (bypass, unsupported_bypass) = crate::proxy_bypass::import_system(&proxy.bypass);
+            proxy.bypass = bypass;
+            SystemProxyDetection {
+                proxy,
+                unsupported_bypass,
+            }
+        })
+    })
 }
 
 // ── Platform implementations ────────────────────────────────────────
@@ -115,7 +132,7 @@ fn parse_windows_proxy_server(raw: &str) -> (String, bool) {
                     "http" => http_val = Some(addr.trim()),
                     "https" => https_val = Some(addr.trim()),
                     "socks" | "socks4" | "socks5" => socks_val = Some(addr.trim()),
-                    _ => {} // ftp etc. — ignored
+                    _ => {}
                 }
             }
         }
@@ -215,7 +232,7 @@ type MacProxyDictionary = system_configuration::core_foundation::dictionary::CFD
 fn get_system_proxy_from_dynamic_store() -> Option<SystemProxyInfo> {
     use system_configuration::dynamic_store::SCDynamicStoreBuilder;
 
-    let store = SCDynamicStoreBuilder::new("motrix-next").build()?;
+    let store = SCDynamicStoreBuilder::new("rayburst").build()?;
     let proxies = store.get_proxies()?;
 
     if macos_cf_bool(&proxies, "HTTPEnable") {
@@ -661,7 +678,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn parse_windows_multi_protocol_falls_back_to_https() {
-        let raw = "https=10.0.0.1:443;ftp=10.0.0.1:21";
+        let raw = "https=10.0.0.1:443;custom=10.0.0.1:21";
         let (server, is_socks) = parse_windows_proxy_server(raw);
         assert_eq!(server, "http://10.0.0.1:443");
         assert!(!is_socks);
@@ -674,15 +691,6 @@ mod tests {
         let (server, is_socks) = parse_windows_proxy_server(raw);
         assert_eq!(server, "socks5://192.168.1.1:1080");
         assert!(is_socks);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn parse_windows_multi_protocol_unknown_only_returns_empty() {
-        let raw = "ftp=10.0.0.1:21";
-        let (server, is_socks) = parse_windows_proxy_server(raw);
-        assert!(server.is_empty());
-        assert!(!is_socks);
     }
 
     #[cfg(target_os = "windows")]
@@ -801,4 +809,9 @@ mod tests {
     fn parse_gnome_ignore_hosts_handles_empty() {
         assert_eq!(parse_gnome_ignore_hosts("[]"), "");
     }
+}
+
+#[tauri::command]
+pub fn normalize_proxy_bypass(value: String) -> Result<String, crate::error::AppError> {
+    crate::proxy_bypass::normalize(&value)
 }

@@ -1,9 +1,16 @@
 name: CI
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   frontend:
@@ -28,17 +35,14 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
-      - name: Type check
-        run: npx vue-tsc --noEmit
-
-      - name: Repo integrity (locale parity + i18n usage)
+      - name: Repo integrity (locale structure + placeholders)
         run: node scripts/check-repo-integrity.mjs
 
       - name: Run tests
         run: pnpm test
 
-      - name: Build frontend
-        run: npx vite build
+      - name: Type check and build frontend
+        run: pnpm build
 
   backend:
     name: Backend Quality
@@ -63,28 +67,21 @@ jobs:
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf
 
-      - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: pnpm
-
-      - name: Install Node dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Rust format check
         working-directory: src-tauri
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
+
+      - name: Build native messaging launcher
+        run: node scripts/build-native-messaging-launcher.mjs
 
       - name: Clippy lint
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Cargo check
-        working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Cargo test
         working-directory: src-tauri
-        run: cargo test --all-targets
+        run: cargo test --workspace --all-targets --locked

@@ -1,6 +1,7 @@
-/** @fileoverview Centralized AppConfig hydration, migration, and repair. */
+/** @fileoverview Current AppConfig defaults and validation. */
 import {
   DEFAULT_APP_CONFIG,
+  buildDefaultCategories,
   FILE_ALLOCATION_OPTIONS,
   APP_LOG_LEVELS,
   ARIA2_LOG_LEVELS,
@@ -9,21 +10,36 @@ import {
   OPACITY_PERCENT_MIN,
   OPACITY_PERCENT_MAX,
 } from '@shared/constants'
+import {
+  NUMERIC_CONFIG_CONSTRAINTS,
+  NUMERIC_CONFIG_ENUM_VALUES,
+  PORT_RECOVERY_CONSTRAINT,
+  type NumericConfigKey,
+  isNumericValueValid,
+} from '@shared/configConstraints'
 import { getAllowedColorSchemeIds, normalizeCustomColorScheme } from '@shared/utils/colorSchemeConfig'
-import { runMigrations, type MigrationResult } from '@shared/utils/configMigration'
 import { normalizeProxyMode } from '@shared/utils/proxy'
 import type { AppConfig, ClipboardConfig, PortConflictRecoveryConfig, ProxyConfig } from '@shared/types'
 import { normalizeFileCategory } from '@shared/utils/fileCategory'
+import { isValidOptionalIpAddress } from '@shared/utils/ipAddress'
+import { isValidBtPeerIdPrefix, isValidBtUserAgent } from '@shared/utils/btIdentity'
 import {
   normalizeRecentUserAgentProfileIds,
   normalizeUserAgentProfiles,
   normalizeUserAgentRules,
 } from '@shared/utils/userAgentPolicy'
-import { DEFAULT_TASK_MANUAL_ORDER, type TaskManualOrderConfig } from '@/composables/useTaskSort'
+import {
+  ALL_SORT_FIELDS,
+  DEFAULT_TASK_MANUAL_ORDER,
+  DEFAULT_TASK_SORT,
+  PROGRESS_SORT_FIELDS,
+  TERMINAL_SORT_FIELDS,
+  type TaskManualOrderConfig,
+  type TaskSortConfig,
+} from '@/composables/useTaskSort'
 
 export interface HydratedAppConfig {
   config: AppConfig
-  migration: MigrationResult
   repairs: string[]
   shouldPersist: boolean
 }
@@ -67,25 +83,6 @@ function repairEnum<T extends readonly string[]>(
   repairs.push(key)
 }
 
-function normalizePort(value: unknown, fallback: number, key: string, repairs: string[]): number {
-  const port = Number(value)
-  if (Number.isInteger(port) && port >= 0 && port <= 65535) return port
-  repairs.push(key)
-  return fallback
-}
-
-function isValidPort(value: unknown): boolean {
-  const port = Number(value)
-  return Number.isInteger(port) && port >= 0 && port <= 65535
-}
-
-function normalizePositiveNumber(value: unknown, fallback: number, key: string, repairs: string[]): number {
-  const number = Number(value)
-  if (Number.isFinite(number) && number >= 0) return number
-  repairs.push(key)
-  return fallback
-}
-
 function normalizeHttpUrl(value: unknown, fallback: string, key: string, repairs: string[]): string {
   if (typeof value === 'string') {
     try {
@@ -95,20 +92,6 @@ function normalizeHttpUrl(value: unknown, fallback: string, key: string, repairs
       // Repaired below.
     }
   }
-  repairs.push(key)
-  return fallback
-}
-
-function normalizeBoundedInteger(
-  value: unknown,
-  fallback: number,
-  min: number,
-  max: number,
-  key: string,
-  repairs: string[],
-): number {
-  const number = Number(value)
-  if (Number.isInteger(number) && number >= min && number <= max) return number
   repairs.push(key)
   return fallback
 }
@@ -140,12 +123,6 @@ function normalizeOptionalString(value: unknown, fallback: string, key: string, 
   const trimmed = value.trim()
   if (trimmed !== value) repairs.push(key)
   return trimmed
-}
-
-function normalizeBoolean(value: unknown, fallback: boolean, key: string, repairs: string[]): boolean {
-  if (typeof value === 'boolean') return value
-  repairs.push(key)
-  return fallback
 }
 
 function normalizeProxy(value: unknown, repairs: string[]): ProxyConfig {
@@ -180,7 +157,7 @@ function normalizeClipboard(value: unknown): ClipboardConfig {
   return {
     enable: typeof saved.enable === 'boolean' ? saved.enable : defaults.enable,
     http: typeof saved.http === 'boolean' ? saved.http : defaults.http,
-    ftp: typeof saved.ftp === 'boolean' ? saved.ftp : defaults.ftp,
+    sftp: typeof saved.sftp === 'boolean' ? saved.sftp : defaults.sftp,
     magnet: typeof saved.magnet === 'boolean' ? saved.magnet : defaults.magnet,
     ed2k: typeof saved.ed2k === 'boolean' ? saved.ed2k : defaults.ed2k,
     thunder: typeof saved.thunder === 'boolean' ? saved.thunder : defaults.thunder,
@@ -192,10 +169,10 @@ function normalizePortRecovery(value: unknown, repairs: string[]): PortConflictR
   const defaults = DEFAULT_APP_CONFIG.portConflictRecovery
   const saved = isRecord(value) ? value : {}
   const endpointsAreValid =
-    (saved.rangeStart === undefined || isValidPort(saved.rangeStart)) &&
-    (saved.rangeEnd === undefined || isValidPort(saved.rangeEnd))
-  const rangeStart = normalizePort(saved.rangeStart, defaults.rangeStart, 'portConflictRecovery.range', repairs)
-  const rangeEnd = normalizePort(saved.rangeEnd, defaults.rangeEnd, 'portConflictRecovery.range', repairs)
+    (saved.rangeStart === undefined || isNumericValueValid(saved.rangeStart, PORT_RECOVERY_CONSTRAINT)) &&
+    (saved.rangeEnd === undefined || isNumericValueValid(saved.rangeEnd, PORT_RECOVERY_CONSTRAINT))
+  const rangeStart = endpointsAreValid ? Number(saved.rangeStart ?? defaults.rangeStart) : defaults.rangeStart
+  const rangeEnd = endpointsAreValid ? Number(saved.rangeEnd ?? defaults.rangeEnd) : defaults.rangeEnd
   const validRange = endpointsAreValid && rangeStart <= rangeEnd
 
   if (!validRange) {
@@ -209,7 +186,6 @@ function normalizePortRecovery(value: unknown, repairs: string[]): PortConflictR
     rpc: typeof saved.rpc === 'boolean' ? saved.rpc : defaults.rpc,
     extensionApi: typeof saved.extensionApi === 'boolean' ? saved.extensionApi : defaults.extensionApi,
     bt: typeof saved.bt === 'boolean' ? saved.bt : defaults.bt,
-    dht: typeof saved.dht === 'boolean' ? saved.dht : defaults.dht,
     ed2k: typeof saved.ed2k === 'boolean' ? saved.ed2k : defaults.ed2k,
     ed2kUdp: typeof saved.ed2kUdp === 'boolean' ? saved.ed2kUdp : defaults.ed2kUdp,
   }
@@ -220,7 +196,7 @@ function normalizeTaskManualOrder(value: unknown, repairs: string[]): TaskManual
   const normalizeList = (key: keyof TaskManualOrderConfig): string[] => {
     const raw = saved[key]
     if (!Array.isArray(raw)) {
-      if (raw !== undefined) repairs.push(`taskManualOrder.${key}`)
+      repairs.push(`taskManualOrder.${key}`)
       return [...DEFAULT_TASK_MANUAL_ORDER[key]]
     }
     const result = raw.filter((item): item is string => typeof item === 'string' && item.length > 0)
@@ -229,13 +205,50 @@ function normalizeTaskManualOrder(value: unknown, repairs: string[]): TaskManual
   }
 
   return {
-    active: normalizeList('active'),
-    stopped: normalizeList('stopped'),
     all: normalizeList('all'),
+    progress: normalizeList('progress'),
+    failed: normalizeList('failed'),
+    completed: normalizeList('completed'),
+  }
+}
+
+function normalizeTaskSort(value: unknown, repairs: string[]): TaskSortConfig {
+  const saved = isRecord(value) ? value : {}
+  const normalize = <K extends keyof TaskSortConfig>(
+    key: K,
+    fields: readonly TaskSortConfig[K]['field'][],
+  ): TaskSortConfig[K] => {
+    const entry = isRecord(saved[key]) ? saved[key] : {}
+    const defaults = DEFAULT_TASK_SORT[key]
+    const field = fields.includes(entry.field as TaskSortConfig[K]['field'])
+      ? (entry.field as TaskSortConfig[K]['field'])
+      : defaults.field
+    const direction = entry.direction === 'asc' || entry.direction === 'desc' ? entry.direction : defaults.direction
+    if (field !== entry.field || direction !== entry.direction) repairs.push(`taskSort.${key}`)
+    return { field, direction } as TaskSortConfig[K]
+  }
+
+  return {
+    all: normalize('all', ALL_SORT_FIELDS),
+    progress: normalize('progress', PROGRESS_SORT_FIELDS),
+    failed: normalize('failed', TERMINAL_SORT_FIELDS),
+    completed: normalize('completed', TERMINAL_SORT_FIELDS),
   }
 }
 
 function normalizeScalarValues(config: Record<string, unknown>, repairs: string[]): void {
+  for (const [key, fallback] of Object.entries(DEFAULT_APP_CONFIG)) {
+    if (key === 'rpcSecret' || key === 'extensionApiSecret') continue
+    if ((typeof fallback === 'boolean' || typeof fallback === 'string') && typeof config[key] !== typeof fallback) {
+      config[key] = fallback
+      repairs.push(key)
+    }
+  }
+  repairEnum(config, 'mediaDefaultFormat', ['mp4', 'mkv'] as const, DEFAULT_APP_CONFIG.mediaDefaultFormat, repairs)
+  if (typeof config.mediaSelectBeforeDownload !== 'boolean') {
+    config.mediaSelectBeforeDownload = DEFAULT_APP_CONFIG.mediaSelectBeforeDownload
+    repairs.push('mediaSelectBeforeDownload')
+  }
   repairEnum(config, 'theme', ['auto', 'light', 'dark'] as const, DEFAULT_APP_CONFIG.theme, repairs)
   repairEnum(config, 'taskCardMode', ['full', 'compact'] as const, DEFAULT_APP_CONFIG.taskCardMode, repairs)
   config.taskCardOpacity = normalizeClampedInteger(
@@ -280,12 +293,6 @@ function normalizeScalarValues(config: Record<string, unknown>, repairs: string[
     'taskPaginationOpacity',
     repairs,
   )
-  config.speedLimitButtonVisible = normalizeBoolean(
-    config.speedLimitButtonVisible,
-    DEFAULT_APP_CONFIG.speedLimitButtonVisible,
-    'speedLimitButtonVisible',
-    repairs,
-  )
   config.speedLimitButtonOpacity = normalizeClampedInteger(
     config.speedLimitButtonOpacity,
     DEFAULT_APP_CONFIG.speedLimitButtonOpacity,
@@ -294,97 +301,66 @@ function normalizeScalarValues(config: Record<string, unknown>, repairs: string[
     'speedLimitButtonOpacity',
     repairs,
   )
-  config.taskListWatermark = normalizeBoolean(
-    config.taskListWatermark,
-    DEFAULT_APP_CONFIG.taskListWatermark,
-    'taskListWatermark',
-    repairs,
-  )
-  config.openFolderOnNotificationClick = normalizeBoolean(
-    config.openFolderOnNotificationClick,
-    DEFAULT_APP_CONFIG.openFolderOnNotificationClick,
-    'openFolderOnNotificationClick',
-    repairs,
-  )
-  config.openTaskListOnStartNotificationClick = normalizeBoolean(
-    config.openTaskListOnStartNotificationClick,
-    DEFAULT_APP_CONFIG.openTaskListOnStartNotificationClick,
-    'openTaskListOnStartNotificationClick',
-    repairs,
-  )
   repairEnum(config, 'updateChannel', UPDATE_CHANNELS, DEFAULT_APP_CONFIG.updateChannel, repairs)
   repairEnum(config, 'logLevel', APP_LOG_LEVELS, DEFAULT_APP_CONFIG.logLevel, repairs)
   repairEnum(config, 'aria2LogLevel', ARIA2_LOG_LEVELS, DEFAULT_APP_CONFIG.aria2LogLevel, repairs)
   repairEnum(config, 'fileAllocation', FILE_ALLOCATION_OPTIONS, DEFAULT_APP_CONFIG.fileAllocation, repairs)
+  repairEnum(config, 'fileDeletionMode', ['trash', 'permanent'] as const, DEFAULT_APP_CONFIG.fileDeletionMode, repairs)
+  repairEnum(
+    config,
+    'btEncryption',
+    ['preferred', 'required', 'disabled'] as const,
+    DEFAULT_APP_CONFIG.btEncryption,
+    repairs,
+  )
+  repairEnum(config, 'btTransport', ['tcp', 'utp', 'both'] as const, DEFAULT_APP_CONFIG.btTransport, repairs)
+  if (!isValidBtUserAgent(config.btUserAgent)) {
+    config.btUserAgent = DEFAULT_APP_CONFIG.btUserAgent
+    repairs.push('btUserAgent')
+  }
+  if (!isValidBtPeerIdPrefix(config.btPeerIdPrefix)) {
+    config.btPeerIdPrefix = DEFAULT_APP_CONFIG.btPeerIdPrefix
+    repairs.push('btPeerIdPrefix')
+  }
+  repairEnum(
+    config,
+    'magnetFileSelectionPolicy',
+    ['download-all', 'prompt', 'manual'] as const,
+    DEFAULT_APP_CONFIG.magnetFileSelectionPolicy,
+    repairs,
+  )
+  repairEnum(
+    config,
+    'btBlocklistScope',
+    ['peers', 'peers-and-trackers', 'all'] as const,
+    DEFAULT_APP_CONFIG.btBlocklistScope,
+    repairs,
+  )
 
-  config.rpcListenPort = normalizePort(config.rpcListenPort, DEFAULT_APP_CONFIG.rpcListenPort, 'rpcListenPort', repairs)
-  config.extensionApiPort = normalizePort(
-    config.extensionApiPort,
-    DEFAULT_APP_CONFIG.extensionApiPort,
-    'extensionApiPort',
-    repairs,
-  )
-  config.listenPort = normalizePort(config.listenPort, DEFAULT_APP_CONFIG.listenPort, 'listenPort', repairs)
-  config.dhtListenPort = normalizePort(config.dhtListenPort, DEFAULT_APP_CONFIG.dhtListenPort, 'dhtListenPort', repairs)
-  config.ed2kListenPort = normalizePort(
-    config.ed2kListenPort,
-    DEFAULT_APP_CONFIG.ed2kListenPort,
-    'ed2kListenPort',
-    repairs,
-  )
-  config.ed2kUdpListenPort = normalizePort(
-    config.ed2kUdpListenPort,
-    DEFAULT_APP_CONFIG.ed2kUdpListenPort,
-    'ed2kUdpListenPort',
-    repairs,
-  )
-
-  config.split = normalizePositiveNumber(config.split, DEFAULT_APP_CONFIG.split, 'split', repairs)
-  config.taskPageSize = normalizeBoundedInteger(
-    config.taskPageSize,
-    DEFAULT_APP_CONFIG.taskPageSize,
-    1,
-    100,
-    'taskPageSize',
-    repairs,
-  )
-  config.maxConcurrentDownloads = normalizePositiveNumber(
-    config.maxConcurrentDownloads,
-    DEFAULT_APP_CONFIG.maxConcurrentDownloads,
-    'maxConcurrentDownloads',
-    repairs,
-  )
-  config.maxConnectionPerServer = normalizePositiveNumber(
-    config.maxConnectionPerServer,
-    DEFAULT_APP_CONFIG.maxConnectionPerServer,
-    'maxConnectionPerServer',
-    repairs,
-  )
-  config.btMaxPeers = normalizePositiveNumber(config.btMaxPeers, DEFAULT_APP_CONFIG.btMaxPeers, 'btMaxPeers', repairs)
-  config.btTrackerSyncIntervalHours = normalizePositiveNumber(
-    config.btTrackerSyncIntervalHours,
-    DEFAULT_APP_CONFIG.btTrackerSyncIntervalHours,
-    'btTrackerSyncIntervalHours',
-    repairs,
-  )
-  config.btPeerBlocklistSyncIntervalHours = normalizeBoundedInteger(
-    config.btPeerBlocklistSyncIntervalHours,
-    DEFAULT_APP_CONFIG.btPeerBlocklistSyncIntervalHours,
-    0,
-    8760,
-    'btPeerBlocklistSyncIntervalHours',
-    repairs,
-  )
+  if (typeof config.btExternalIp !== 'string' || !isValidOptionalIpAddress(config.btExternalIp)) {
+    config.btExternalIp = DEFAULT_APP_CONFIG.btExternalIp
+    repairs.push('btExternalIp')
+  } else {
+    config.btExternalIp = config.btExternalIp.trim()
+  }
+  for (const key of Object.keys(NUMERIC_CONFIG_CONSTRAINTS) as NumericConfigKey[]) {
+    const constraint = NUMERIC_CONFIG_CONSTRAINTS[key]
+    if (isNumericValueValid(config[key], constraint)) {
+      config[key] = Number(config[key])
+      continue
+    }
+    config[key] = DEFAULT_APP_CONFIG[key]
+    repairs.push(key)
+  }
+  for (const [key, allowed] of Object.entries(NUMERIC_CONFIG_ENUM_VALUES)) {
+    if (allowed.includes(Number(config[key]) as never)) continue
+    config[key] = DEFAULT_APP_CONFIG[key as keyof typeof DEFAULT_APP_CONFIG]
+    repairs.push(key)
+  }
   config.btPeerBlocklistUrl = normalizeHttpUrl(
     config.btPeerBlocklistUrl,
     DEFAULT_APP_CONFIG.btPeerBlocklistUrl,
     'btPeerBlocklistUrl',
-    repairs,
-  )
-  config.ed2kBootstrapSyncIntervalHours = normalizePositiveNumber(
-    config.ed2kBootstrapSyncIntervalHours,
-    DEFAULT_APP_CONFIG.ed2kBootstrapSyncIntervalHours,
-    'ed2kBootstrapSyncIntervalHours',
     repairs,
   )
 }
@@ -430,33 +406,36 @@ function normalizeFileCategories(config: AppConfig, repairs: string[]): void {
           return (
             typeof category.label === 'string' &&
             Array.isArray(category.extensions) &&
-            typeof category.directory === 'string'
+            typeof category.directory === 'string' &&
+            (category.directoryMode === 'relative' || category.directoryMode === 'absolute')
           )
         })
         .map(normalizeFileCategory)
     : []
+  if (before !== '[]' && config.fileCategories.length === 0) config.fileCategories = buildDefaultCategories()
   if (JSON.stringify(config.fileCategories) !== before) repairs.push('fileCategories')
 }
 
 /**
  * Converts a partial persisted config into a complete, runtime-safe AppConfig.
  *
- * Migrations handle semantic schema changes. Hydration handles default
- * materialization and defensive repair for malformed persisted values.
+ * Only current preference keys are accepted. Unknown keys are discarded.
  */
 export function hydrateAppConfig(saved?: Partial<AppConfig> | null): HydratedAppConfig {
   const defaults = createDefaultAppConfig()
-  const input = saved && isRecord(saved) ? (clonePlain(saved) as Partial<AppConfig>) : null
-  const migration = input
-    ? runMigrations(input)
-    : { migrated: false, targetVersion: DEFAULT_APP_CONFIG.configVersion, errors: [] }
-  const merged = { ...defaults, ...(input ?? {}) } as AppConfig
+  const raw = saved && isRecord(saved) ? clonePlain(saved) : null
   const repairs: string[] = []
+  const input = raw
+    ? (Object.fromEntries(
+        Object.entries(raw).filter(([key]) => {
+          const known = Object.prototype.hasOwnProperty.call(defaults, key)
+          if (!known) repairs.push(key)
+          return known
+        }),
+      ) as Partial<AppConfig>)
+    : null
+  const merged = { ...defaults, ...(input ?? {}) } as AppConfig
   const record = merged as Record<string, unknown>
-
-  delete record.autoSelectAllMagnetFilesFromExtension
-  delete record.autoSyncTracker
-  delete record.protocols
 
   merged.proxy = normalizeProxy(input?.proxy ?? merged.proxy, repairs)
   merged.clipboard = normalizeClipboard(input?.clipboard ?? merged.clipboard)
@@ -465,6 +444,7 @@ export function hydrateAppConfig(saved?: Partial<AppConfig> | null): HydratedApp
     repairs,
   )
   merged.taskManualOrder = normalizeTaskManualOrder(input?.taskManualOrder ?? merged.taskManualOrder, repairs)
+  merged.taskSort = normalizeTaskSort(input?.taskSort ?? merged.taskSort, repairs)
 
   normalizeScalarValues(record, repairs)
   normalizeSecrets(merged, input, repairs)
@@ -473,8 +453,7 @@ export function hydrateAppConfig(saved?: Partial<AppConfig> | null): HydratedApp
 
   return {
     config: merged,
-    migration,
     repairs: dedupe(repairs),
-    shouldPersist: migration.migrated || repairs.length > 0,
+    shouldPersist: repairs.length > 0,
   }
 }

@@ -1,28 +1,27 @@
 <script setup lang="ts">
-/** @fileoverview Preference settings view with preference sub-routes. */
+/** Route-backed preference tabs retain the shared unsaved-change guard. */
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { NTabs, NTab } from 'naive-ui'
+import { preferenceDestinations } from '@/components/layout/navigation'
 
 const { t } = useI18n()
 const route = useRoute()
-
-const tabKey = computed(() => {
-  const path = route.path
-  if (path.includes('downloads')) return 'downloads'
-  if (path.includes('bt')) return 'bt'
-  if (path.includes('ed2k')) return 'ed2k'
-  if (path.includes('network')) return 'network'
-  if (path.includes('advanced')) return 'advanced'
-  return 'general'
-})
+const router = useRouter()
+const selectedTab = computed(() => String(route.name ?? 'preference-general'))
+function navigate(name: string) {
+  void router.push({ name })
+}
 </script>
 
 <template>
   <div class="preference-view">
-    <header class="panel-header" data-tauri-drag-region>
-      <h4>{{ t('preferences.' + tabKey) || 'Settings' }}</h4>
-    </header>
+    <NTabs class="preference-tabs" :value="selectedTab" type="line" @update:value="navigate">
+      <NTab v-for="key in preferenceDestinations" :key="key" :name="'preference-' + key">
+        {{ t('preferences.' + key) }}
+      </NTab>
+    </NTabs>
     <div class="panel-body">
       <router-view v-slot="{ Component, route: innerRoute }">
         <Transition name="fade" mode="out-in">
@@ -38,23 +37,16 @@ const tabKey = computed(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
-.panel-header {
-  padding: var(--header-top-offset) 0 12px;
-  margin: 0 36px;
-  border-bottom: 2px solid var(--panel-border);
-  user-select: none;
-}
-.panel-header h4 {
-  margin: 0;
-  color: var(--panel-title);
-  font-size: 16px;
-  font-weight: normal;
-  line-height: 24px;
+.preference-tabs {
+  padding: 8px var(--content-gutter) 0;
+  flex-shrink: 0;
 }
 .panel-body {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 </style>

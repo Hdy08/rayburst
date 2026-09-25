@@ -1,37 +1,47 @@
-/** @fileoverview Interaction-state tests for the shared preference action bar. */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
-import { NButton } from 'naive-ui'
+import { flushPromises, mount } from '@vue/test-utils'
 import PreferenceActionBar from '../PreferenceActionBar.vue'
 
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+const restart = vi.fn()
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('@/composables/useEngineRestart', () => ({ useEngineRestart: () => ({ confirmManualRestart: restart }) }))
+vi.mock('naive-ui', () => ({
+  NButton: { props: ['disabled'], template: '<button :disabled="disabled"><slot /></button>' },
+  NIcon: { template: '<span><slot /></span>' },
+  NDropdown: { name: 'NDropdown', props: ['options'], emits: ['select'], template: '<div><slot /></div>' },
 }))
+beforeEach(() => {
+  restart.mockReset()
+})
 
-describe('PreferenceActionBar', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('keeps save and discard inactive when the form is clean', () => {
-    const wrapper = mount(PreferenceActionBar, { props: { isDirty: false } })
-    const [save, discard, restart] = wrapper.findAllComponents(NButton)
-
-    expect(save.props('type')).toBe('default')
-    expect(save.props('disabled')).toBe(true)
-    expect(discard.props('type')).toBe('default')
-    expect(discard.props('disabled')).toBe(true)
-    expect(restart.props('disabled')).toBe(false)
-  })
-
-  it('uses primary save and semantic error discard when the form is dirty', () => {
+describe('shared preference footer', () => {
+  it('keeps save and discard owned by the form while rendering in the footer', async () => {
     const wrapper = mount(PreferenceActionBar, { props: { isDirty: true } })
-    const [save, discard] = wrapper.findAllComponents(NButton)
+    await flushPromises()
+    expect(wrapper.find('.form-actions').exists()).toBe(true)
+    const buttons = wrapper.element.querySelectorAll('button')
+    buttons[0].click()
+    buttons[1].click()
+    expect(wrapper.emitted('save')).toHaveLength(1)
+    expect(wrapper.emitted('discard')).toHaveLength(1)
+    await wrapper.setProps({ isDirty: false })
+    expect(buttons[0].disabled).toBe(true)
+    expect(buttons[1].disabled).toBe(true)
+    wrapper.unmount()
+  })
 
-    expect(save.props('type')).toBe('primary')
-    expect(save.props('disabled')).toBe(false)
-    expect(discard.props('type')).toBe('error')
-    expect(discard.props('ghost')).toBe(true)
-    expect(discard.props('disabled')).toBe(false)
+  it('retains validation and routes compact actions through the same handlers', async () => {
+    const wrapper = mount(PreferenceActionBar, { props: { isDirty: true, isValid: false } })
+    await flushPromises()
+    expect(wrapper.element.querySelector('button')?.disabled).toBe(true)
+    const menu = wrapper.getComponent({ name: 'NDropdown' })
+    menu.vm.$emit('select', 'discard')
+    expect(wrapper.emitted('discard')).toHaveLength(1)
+    menu.vm.$emit('select', 'restart')
+    expect(restart).toHaveBeenCalledOnce()
+    await wrapper.setProps({ isDirty: false })
+    menu.vm.$emit('select', 'discard')
+    expect(wrapper.emitted('discard')).toHaveLength(1)
+    wrapper.unmount()
   })
 })

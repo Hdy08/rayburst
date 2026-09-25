@@ -1,0 +1,9 @@
+{
+  "name": "dev.aninsomniacy.rayburst.browser",
+  "description": "Activate Rayburst",
+  "path": "..\\..\\rayburst-browser-launcher.exe",
+  "type": "stdio",
+  "allowed_extensions": [
+    "rayburst-connect@aninsomniacy.dev"
+  ]
+}

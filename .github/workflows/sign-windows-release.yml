@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   resolve-releases:
+    if: vars.SIGNPATH_ENABLED == 'true'
     name: Resolve releases
     runs-on: ubuntu-latest
     outputs:
@@ -28,6 +29,7 @@ jobs:
             --json tagName,isPrerelease,publishedAt)
 
           targets=$(jq -c '
+            map(select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(-[a-zA-Z0-9.]+)?$"))) |
             [
               (map(select(.isPrerelease == false)) | sort_by(.publishedAt) | reverse | first | select(. != null) | { tag: .tagName, version: (.tagName | sub("^v"; "")), channel: "stable" }),
               (map(select(.isPrerelease == true)) | sort_by(.publishedAt) | reverse | first | select(. != null) | { tag: .tagName, version: (.tagName | sub("^v"; "")), channel: "prerelease" })
@@ -79,7 +81,7 @@ jobs:
 
           foreach ($release in $releases) {
             foreach ($installer in $installers) {
-              $asset = "MotrixNext_$($release.version)_$($installer.Suffix)"
+              $asset = "Rayburst_$($release.version)_$($installer.Suffix)"
               $targetDir = Join-Path "unsigned" "$($release.channel)-$($installer.Arch)"
               New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
 
@@ -162,8 +164,8 @@ jobs:
             }
 
             $signature = Get-AuthenticodeSignature -FilePath $signedFile.FullName
-            if (-not $signature.SignerCertificate) {
-              throw "Missing Authenticode signer certificate: $($item.asset)"
+            if ($signature.Status -ne "Valid" -or -not $signature.SignerCertificate) {
+              throw "Invalid Authenticode signature: $($item.asset) ($($signature.Status))"
             }
 
             $expectedSubject = "CN=SignPath Foundation"
@@ -246,10 +248,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASES_JSON: ${{ needs.resolve-releases.outputs.releases }}
         run: |
           set -euo pipefail
-          jq -r '.[].tag' <<< "$RELEASES_JSON" | while IFS= read -r tag; do
+          jq -r '[.[].tag] | unique[]' signing-manifest.json | while IFS= read -r tag; do
             tag="${tag%$'\r'}"
             ./.github/scripts/refresh-updater-json.sh "$tag"
           done

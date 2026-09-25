@@ -1,13 +1,21 @@
+rust_i18n::i18n!("locales", fallback = "en-US");
+
+pub(crate) const APP_ID: &str = env!("DESKTOP_APP_ID");
+
 mod aria2;
 mod commands;
-mod db_guard;
+mod database;
+mod diagnostics;
 mod engine;
 mod error;
 mod gpu_guard;
-mod history;
+mod i18n;
+mod legacy_data;
 mod log_policy;
 #[cfg(target_os = "macos")]
 mod menu;
+mod native_messaging;
+mod proxy_bypass;
 mod services;
 mod tray;
 mod upnp;
@@ -16,12 +24,11 @@ mod windows_focus;
 #[cfg(target_os = "windows")]
 mod windows_toast;
 
-// Re-export the Windows elevation entry point at the crate root so that
-// main.rs can call it before Tauri initialises.  The `commands` module
-// is intentionally private — only this single function needs to be
-// accessible from the binary crate.
 #[cfg(windows)]
-pub use commands::protocol::try_run_elevated;
+pub use engine::windows_process::prepare_install;
+
+#[cfg(windows)]
+mod association_cleanup;
 
 use crate::commands::power::ShutdownCancelState;
 use crate::commands::updater::{DownloadedUpdate, UpdateCancelState};
@@ -36,11 +43,11 @@ use upnp::UpnpState;
 /// Pre-reads the user's log-level preference from the raw config.json file.
 ///
 /// `tauri-plugin-store` isn't available until after `Builder.build()`, so we
-/// read the raw JSON file directly.  Falls back to `Debug` if absent so that
-/// first-run users get full diagnostic output for bug reports.
+/// read the raw JSON file directly. Falls back to `Info` when no preference
+/// has been persisted yet.
 pub(crate) fn read_log_level() -> log::LevelFilter {
     (|| -> Option<log::LevelFilter> {
-        let data_dir = dirs::data_dir()?.join("com.motrix.next");
+        let data_dir = dirs::data_dir()?.join(APP_ID);
         let store_path = data_dir.join("config.json");
         let content = std::fs::read_to_string(store_path).ok()?;
         let json: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -53,7 +60,7 @@ pub(crate) fn read_log_level() -> log::LevelFilter {
             _ => None,
         }
     })()
-    .unwrap_or(log::LevelFilter::Debug)
+    .unwrap_or(log::LevelFilter::Info)
 }
 
 /// Tracks the application lifecycle phase for window visibility decisions.
@@ -103,16 +110,19 @@ impl AppLifecycleState {
     }
 }
 
+/// Persist geometry only; platform config owns decorations and startup owns visibility.
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
 
+    let flags = StateFlags::SIZE | StateFlags::POSITION | StateFlags::FULLSCREEN;
+    // Preserve the macOS maximization workaround (tauri-apps/tauri#5812).
     #[cfg(target_os = "macos")]
     {
-        StateFlags::all() & !StateFlags::MAXIMIZED & !StateFlags::VISIBLE
+        flags
     }
     #[cfg(not(target_os = "macos"))]
     {
-        StateFlags::all() & !StateFlags::VISIBLE
+        flags | StateFlags::MAXIMIZED
     }
 }
 
@@ -174,9 +184,10 @@ fn save_window_state_before_lightweight_destroy(app: &tauri::AppHandle) {
 /// to keep the two close paths consistent.
 pub(crate) fn handle_minimize_to_tray(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
-    tray::cancel_pending_main_window_activation();
-    #[cfg(target_os = "windows")]
-    services::windows_notification_activation::clear_main_window_request(app);
+    {
+        tray::cancel_pending_main_window_activation();
+        services::windows_notification_activation::clear_main_window_request(app);
+    }
     // End the cold-start phase on the first window dismissal.
     // After this point, is_autostart_launch() returns false so that
     // window recreations in lightweight mode show the window instead
@@ -198,9 +209,7 @@ pub(crate) fn handle_minimize_to_tray(app: &tauri::AppHandle, window: &tauri::We
         let _ = window.destroy();
     } else {
         log::info!("tray:hide label={}", window.label());
-        if let Err(error) = window.hide() {
-            log::warn!("tray:hide-failed label={} error={error}", window.label());
-        }
+        let _ = window.hide();
     }
 
     #[cfg(target_os = "macos")]
@@ -214,28 +223,50 @@ pub(crate) fn handle_minimize_to_tray(app: &tauri::AppHandle, window: &tauri::We
 
 /// Initialises menus, tray, deep links, window state, and platform-specific
 /// workarounds.  Called once by `Builder.setup()`.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!(
+            target: "panic",
+            event = "panic",
+            backtrace:% = backtrace;
+            "{info}"
+        );
+        log::logger().flush();
+        default_hook(info);
+    }));
+}
+
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
-    match handle.path().app_log_dir() {
-        Ok(log_dir) => {
-            if let Err(error) = log_policy::remove_legacy_log_files(&log_dir) {
-                log::warn!("Failed to remove legacy log files: {error}");
-            }
-        }
-        Err(error) => log::warn!("Failed to resolve log directory for cleanup: {error}"),
-    }
+    legacy_data::import_from_motrix_next(handle);
+    #[cfg(target_os = "windows")]
+    services::windows_notification_activation::setup(handle);
+    install_panic_hook();
+    log::info!(
+        target: "lifecycle",
+        event = "app_started",
+        version:% = handle.package_info().version,
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH;
+        "app_started"
+    );
+    native_messaging::schedule_repair(app.handle());
+    commands::protocol::repair_activation_protocol(app.handle());
     #[cfg(target_os = "macos")]
     {
         let m = menu::build_menu(handle)?;
         app.set_menu(m)?;
     }
+    app.manage(tray::MainWindowState::default());
     let tray_state = tray::setup_tray(handle)?;
     app.manage(tray_state);
 
     // Aria2 JSON-RPC client — starts with default credentials, updated
-    // after engine start via Aria2Client::update_credentials().
-    let aria2_state = aria2::client::Aria2State(std::sync::Arc::new(
-        aria2::client::Aria2Client::new(DEFAULT_RPC_PORT, String::new()),
+    // after engine start via TaskService::update_credentials().
+    let aria2_state = services::tasks::TaskServiceState(std::sync::Arc::new(
+        services::tasks::TaskService::new(DEFAULT_RPC_PORT, String::new()),
     ));
     app.manage(aria2_state);
 
@@ -251,35 +282,31 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(services::bt_blocklist::BtPeerBlocklistServiceState::new());
     app.manage(commands::bt_blocklist::BtPeerBlocklistUpdateState::new());
     app.manage(services::http_api::HttpApiState::new());
+    app.manage(services::downloads::SubmissionGate::default());
     #[cfg(target_os = "linux")]
     app.manage(services::notification::LinuxNotificationRegistry::new());
     app.manage(services::deep_link::PendingDeepLinkState::new());
     app.manage(services::external_input::PendingExternalInputState::new());
     app.manage(services::frontend_action::PendingFrontendActionState::new());
 
-    #[cfg(target_os = "windows")]
-    services::windows_notification_activation::setup(handle);
-
-    #[cfg(target_os = "windows")]
-    {
-        let args: Vec<String> = std::env::args().collect();
-        let _ =
-            services::deep_link::handle_native_action_args(handle, &args, "startup-native-action");
-    }
-
     // App lifecycle — tracks cold-start vs runtime phase for autostart
     // visibility decisions.  See AppLifecycleState doc and issue #206.
     app.manage(AppLifecycleState::new());
 
-    // History database — opens the same DB as tauri-plugin-sql migrations.
-    {
-        use tauri::Manager;
-        let app_data = app.path().app_data_dir()?;
-        let db_path = app_data.join("history.db");
-        let history_db = history::HistoryDb::open(&db_path)
-            .map_err(|e| format!("Failed to open history.db: {e}"))?;
-        app.manage(history::HistoryDbState(std::sync::Arc::new(history_db)));
-    }
+    // Database failures must not prevent the window from opening.
+    app.manage(database::DatabaseState(std::sync::Arc::new(
+        database::Database::unavailable(),
+    )));
+    let database_app = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = commands::database_initialize(database_app.clone()).await {
+            log::error!("database: initialization failed: {error}");
+            return;
+        }
+        if let Err(error) = services::downloads::restore_pending(&database_app).await {
+            log::error!("downloads: pending confirmations could not be restored: {error}");
+        }
+    });
 
     #[cfg(target_os = "macos")]
     app.on_menu_event(|app, event| match event.id().as_ref() {
@@ -376,42 +403,6 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // The window starts hidden (tauri.conf.json visible: false) and
     // transitions through this pipeline before becoming visible.
 
-    // Force Windows 11 DWM native rounded corners on the main window.
-    //
-    // With `transparent: true` + `decorations: false`, the HWND is a
-    // layered window — DWM does NOT auto-round layered windows.  We
-    // explicitly request DWMWCP_ROUND (value 2) so DWM applies its
-    // native ~8px corner rounding, matching the original Motrix look.
-    //
-    // Previously this block used DWMWCP_DONOTROUND (value 1) to
-    // *disable* DWM corners because CSS `border-radius: 12px` was
-    // drawing its own competing rounded corners on the transparent
-    // canvas.  Now that CSS border-radius is removed, DWM handles
-    // all corner rounding natively — no CSS workarounds needed.
-    //
-    // Safe no-op on Windows 10 (DWM ignores the preference).
-    // DWM auto-disables rounding when the window is maximized.
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::Graphics::Dwm::{
-            DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
-        };
-        if let Some(w) = app.get_webview_window("main") {
-            if let Ok(hwnd_handle) = w.hwnd() {
-                let hwnd = hwnd_handle.0;
-                // DWMWCP_ROUND = 2: force DWM native rounded corners
-                let preference: u32 = 2;
-                unsafe {
-                    DwmSetWindowAttribute(
-                        hwnd,
-                        DWMWA_WINDOW_CORNER_PREFERENCE as u32,
-                        &preference as *const u32 as *const _,
-                        std::mem::size_of::<u32>() as u32,
-                    );
-                }
-            }
-        }
-    }
     // Hide Dock icon on startup when both autoHideWindow and
     // hideDockOnMinimize are enabled, AND the app was launched by
     // the OS autostart mechanism (--autostart flag).  Manual launches
@@ -526,45 +517,14 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         tauri::RunEvent::Exit => {
             #[cfg(target_os = "windows")]
             services::windows_notification_activation::shutdown();
-            log::info!("app:exit — saving session, stopping engine and UPnP");
+            log::info!("app:exit — stopping engine and runtime services");
 
-            // ── Clear completed download records on exit ────────────
-            // When the user exits via tray-quit (app.exit(0)), the frontend's
-            // handleExitConfirm() is bypassed. Read the preference from the
-            // persistent store and clear records directly via HistoryDb.
-            // Best-effort with 2s timeout — never blocks app exit.
-            {
-                let clear_on_exit = read_pref_bool(app, "clearCompletedOnExit", false);
-                if clear_on_exit {
-                    if let Some(db_state) = app.try_state::<history::HistoryDbState>() {
-                        let db = db_state.0.clone();
-                        let _ = tauri::async_runtime::block_on(async {
-                            tokio::time::timeout(
-                                std::time::Duration::from_secs(2),
-                                db.clear_records(Some("complete")),
-                            )
-                            .await
-                        });
-                        log::info!("app:exit — cleared completed history records");
-                    }
-                }
+            if let Some(supervisor) = app.try_state::<engine::supervisor::EngineSupervisor>() {
+                let clear_completed = read_pref_bool(app, "clearCompletedOnExit", false);
+                let _ = tauri::async_runtime::block_on(
+                    supervisor.stop_for_app_exit(app, clear_completed),
+                );
             }
-
-            // Save aria2 session before killing the engine so in-progress
-            // downloads survive across restarts.  Best-effort with 500ms
-            // timeout — never blocks app exit.
-            if let Some(aria2) = app.try_state::<aria2::client::Aria2State>() {
-                let client = aria2.0.clone();
-                let _ = tauri::async_runtime::block_on(async {
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(500),
-                        client.save_session(),
-                    )
-                    .await
-                });
-                log::info!("aria2 session save attempted via managed client");
-            }
-            let _ = engine::stop_engine(app, true);
             // Stop the extension HTTP API server gracefully.
             if let Some(api_state) = app.try_state::<services::http_api::HttpApiState>() {
                 let _ = tauri::async_runtime::block_on(async {
@@ -587,28 +547,11 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
                     .await;
                 });
             }
-            // Stop stat service before process shutdown so any active
-            // keep-awake power assertion is released deterministically.
-            if let Some(stat_state) = app.try_state::<services::stat::StatServiceState>() {
-                let _ = tauri::async_runtime::block_on(async {
-                    tokio::time::timeout(std::time::Duration::from_millis(500), async {
-                        let handle = {
-                            let mut guard = stat_state.0.lock().await;
-                            guard.take()
-                        };
-                        if let Some(handle) = handle {
-                            handle.stop().await;
-                        }
-                    })
-                    .await
-                });
-                log::info!("stat_service: stopped");
-            }
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
             log::info!("app:reopen — restoring main window");
-            tray::activate_main_window(app, "macos-reopen");
+            tray::request_main_window(app, "macos-reopen", true);
         }
         _ => {}
     }
@@ -638,95 +581,56 @@ pub fn run() {
     // Tauri's thread pool, the async runtime, or any plugin initialisation.
     gpu_guard::pre_flight();
 
-    // ── Panic hook: route panics through log crate for file persistence ──
-    // Must be set BEFORE Tauri Builder so even plugin init panics are caught.
-    // Without this, panics only reach stderr and are lost on process exit.
-    std::panic::set_hook(Box::new(|info| {
-        log::error!("PANIC: {}", info);
-    }));
-
     let log_level = read_log_level();
-
-    // ── Pre-flight DB migration guard ────────────────────────────
-    // Must run BEFORE tauri_plugin_sql to prevent panic on downgrade.
-    // Uses the platform-specific app data directory (same path that
-    // tauri_plugin_sql's "sqlite:history.db" resolves to).
-    if let Some(dir) = dirs::data_dir().map(|d| d.join("com.motrix.next")) {
-        db_guard::check(&dir);
-    }
+    let log_control = log_policy::LogLevelControl::new(log_level);
+    let log_filter = log_control.clone();
+    let log_targets = vec![tauri_plugin_log::Target::new(
+        tauri_plugin_log::TargetKind::LogDir {
+            file_name: Some("rayburst".into()),
+        },
+    )];
+    #[cfg(debug_assertions)]
+    let log_targets = {
+        let mut log_targets = log_targets;
+        log_targets.push(
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout).format(
+                |out, message, record| {
+                    out.finish(format_args!(
+                        "{}",
+                        log_policy::format_terminal_record(message, record)
+                    ))
+                },
+            ),
+        );
+        log_targets
+    };
 
     let mut builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
-                .targets([
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
-                        file_name: Some("motrix-next".into()),
-                    }),
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
-                ])
+                .clear_targets()
+                .targets(log_targets)
                 .format(|out, message, record| {
-                    let now = chrono::Local::now();
-                    let source = if record
-                        .target()
-                        .starts_with(tauri_plugin_log::WEBVIEW_TARGET)
-                    {
-                        "webview"
-                    } else {
-                        "rust"
-                    };
                     out.finish(format_args!(
-                        "{} [{:<5}] [{}] {}",
-                        now.format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
-                        record.level(),
-                        source,
-                        message
+                        "{}",
+                        log_policy::format_record(message, record)
                     ))
                 })
                 .max_file_size(log_policy::MAX_LOG_FILE_SIZE.into())
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
-                .level(log_level)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(
+                    log_policy::MAX_LOG_FILES,
+                ))
+                .level(log::LevelFilter::Debug)
                 .level_for("maxminddb", log::LevelFilter::Warn)
-                .level_for("sqlx", log::LevelFilter::Warn)
                 .level_for("zbus", log::LevelFilter::Warn)
                 .level_for("hyper_util", log::LevelFilter::Warn)
                 .level_for("reqwest", log::LevelFilter::Warn)
-                .filter(|metadata| {
-                    !metadata.target().starts_with("tao")
-                        && !metadata.target().starts_with("tracing")
-                })
+                .filter(move |metadata| log_filter.enabled(metadata))
                 .build(),
         )
+        .manage(log_control)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(
-            tauri_plugin_sql::Builder::default()
-                .add_migrations(
-                    "sqlite:history.db",
-                    vec![
-                        tauri_plugin_sql::Migration {
-                            version: 1,
-                            description: "create download_history table",
-                            sql: include_str!("../migrations/001_download_history.sql"),
-                            kind: tauri_plugin_sql::MigrationKind::Up,
-                        },
-                        tauri_plugin_sql::Migration {
-                            version: 2,
-                            description: "add added_at column and task_birth table for position-stable ordering",
-                            sql: include_str!("../migrations/002_add_added_at.sql"),
-                            kind: tauri_plugin_sql::MigrationKind::Up,
-                        },
-                        tauri_plugin_sql::Migration {
-                            version: 3,
-                            description: "add HTTP auth credentials table",
-                            sql: include_str!("../migrations/003_http_auth_credentials.sql"),
-                            kind: tauri_plugin_sql::MigrationKind::Up,
-                        },
-                    ],
-                )
-                .build(),
-        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -744,15 +648,10 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // COM supplies the real action to the registered activator. A launch
-            // marker alone must never show Motrix for a file/folder button.
             #[cfg(target_os = "windows")]
             if services::windows_notification_activation::is_notification_launch(&argv) {
                 return;
             }
-            // Handle protocol activations synchronously in the single-instance
-            // callback. Deferring these actions loses the notification's
-            // short-lived Windows foreground permission before activation runs.
             #[cfg(target_os = "windows")]
             if services::deep_link::handle_native_action_args(
                 app,
@@ -761,89 +660,62 @@ pub fn run() {
             ) {
                 return;
             }
-
-            let app_handle = app.clone();
-            let args = argv;
-            if let Err(e) = app.run_on_main_thread(move || {
-                let urls = services::deep_link::filter_external_input_args(&args);
-                if !urls.is_empty() {
-                    services::deep_link::route_external_inputs(
-                        &app_handle,
-                        urls,
-                        "single-instance",
-                    );
-                    return;
-                }
-
-                if services::deep_link::is_autostart_arg_launch(&args) {
-                    log::info!("single-instance:autostart-skip argc={}", args.len());
-                    return;
-                }
-
-                tray::activate_main_window(&app_handle, "single-instance-launch");
-            }) {
-                log::warn!("single-instance:activate-schedule-failed error={e}");
+            let urls = services::deep_link::filter_external_input_args(&argv);
+            if !urls.is_empty() {
+                services::deep_link::route_external_inputs(app, urls, "single-instance");
+                return;
             }
+
+            if services::deep_link::is_autostart_arg_launch(&argv) {
+                log::info!("single-instance:autostart-skip argc={}", argv.len());
+                return;
+            }
+
+            tray::request_main_window(app, "single-instance-launch", true);
         }));
     }
 
     builder = builder.plugin(tauri_plugin_deep_link::init());
-    // Window-state plugin: saves/restores window position and size.
-    //
-    // VISIBLE is permanently excluded from the plugin's state flags.
-    // Window visibility is managed entirely by the autostart-silent-mode
-    // guard in setup_app() and the frontend's MainLayout.vue.  Allowing
-    // the plugin to save/restore VISIBLE would cause the window to flash
-    // on autostart before the silent-mode check can hide it (#109).
-    //
-    // macOS: Also exclude StateFlags::MAXIMIZED to avoid a known bug in
-    // tao where isMaximized() triggers a new resize event, creating an
-    // infinite loop (tauri-apps/tauri#5812).  The frontend also skips
-    // isMaximized() tracking on macOS (see MainLayout.vue).
-    builder = builder.plugin({
-        use tauri_plugin_window_state::StateFlags;
-
-        let flags = {
-            #[cfg(target_os = "macos")]
-            {
-                StateFlags::all() & !StateFlags::MAXIMIZED & !StateFlags::VISIBLE
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                StateFlags::all() & !StateFlags::VISIBLE
-            }
-        };
-
+    builder = builder.plugin(
         tauri_plugin_window_state::Builder::new()
             .skip_initial_state("main")
-            .with_state_flags(flags)
-            .build()
-    });
+            .with_state_flags(window_state_flags())
+            .build(),
+    );
 
     builder
         .manage(EngineState::new())
+        .manage(services::media::MediaState::new())
+        .manage(engine::supervisor::EngineSupervisor::new())
         .manage(UpnpState::new())
         .manage(std::sync::Arc::new(UpdateCancelState::new()))
         .manage(std::sync::Arc::new(DownloadedUpdate::new()))
         .manage(std::sync::Arc::new(ShutdownCancelState::new()))
         .invoke_handler(tauri::generate_handler![
-            commands::get_system_config,
-            commands::save_system_config,
+            commands::replace_system_config,
             commands::read_settings_backup_file,
             commands::write_settings_backup_file,
-            commands::start_engine_command,
-            commands::stop_engine_command,
-            commands::restart_engine_command,
+            commands::engine_supervisor_state,
+            commands::engine_ensure_running,
+            commands::engine_restart,
+            commands::engine_stop,
+            commands::engine_cancel,
+            commands::engine_recover_runtime_state,
+            commands::resolve_bt_listen_port,
             commands::factory_reset,
-            commands::clear_session_file,
+            commands::database_initialize,
+            commands::database_reset,
             commands::update_tray_title,
-            commands::activate_app_window,
             commands::update_tray_menu_labels,
             commands::update_menu_labels,
             commands::update_progress_bar,
             commands::update_dock_badge,
-            commands::send_task_start_notification,
             commands::send_app_system_notification,
+            commands::activate_app_window,
+            commands::peek_pending_frontend_actions_silent,
+            commands::send_task_start_notification,
+            commands::prepare_local_background,
+            commands::show_notification_item_in_dir,
             commands::check_for_update,
             commands::download_update,
             commands::apply_update,
@@ -858,44 +730,46 @@ pub fn run() {
             commands::reconcile_bt_peer_blocklist,
             commands::set_dock_visible,
             commands::minimize_to_tray,
-            commands::probe_trackers,
             commands::fetch_tracker_sources,
             commands::is_autostart_launch,
             commands::clear_log_file,
+            commands::set_app_log_level,
             commands::export_diagnostic_logs,
             commands::check_path_exists,
             commands::check_path_is_dir,
             commands::read_local_file,
-            commands::prepare_local_background,
             commands::list_dir_files,
             commands::show_item_in_dir,
             commands::open_path_normalized,
-            commands::remove_file,
-            commands::move_file,
-            commands::trash_file,
+            commands::delete_path,
             commands::get_engine_conf_path,
             commands::set_window_alpha,
-            commands::is_default_protocol_client,
+            commands::get_association_status,
             commands::set_default_protocol_client,
-            commands::remove_as_default_protocol_client,
-            commands::resolve_filename,
+            commands::open_default_apps_settings,
             commands::fetch_remote_bytes,
             commands::get_system_proxy,
+            commands::normalize_proxy_bypass,
             commands::lookup_peer_ips,
             commands::refresh_runtime_config,
             commands::restart_http_api,
             commands::peek_pending_deep_links_silent,
             commands::peek_pending_external_inputs_silent,
-            commands::peek_pending_frontend_actions_silent,
             commands::take_pending_deep_links,
             commands::take_pending_external_inputs,
             commands::take_pending_frontend_actions,
+            commands::history_get_record,
+            commands::history_get_page,
+            commands::history_remove_births,
+            commands::database_schema_version,
+            commands::http_auth_save,
+            commands::http_auth_find,
+            commands::http_auth_mark_used,
             commands::history_add_record,
             commands::history_get_records,
             commands::history_remove_record,
             commands::history_clear_records,
             commands::history_remove_stale,
-            commands::history_remove_by_info_hash,
             commands::history_record_birth,
             commands::history_load_births,
             commands::history_check_integrity,
@@ -903,29 +777,44 @@ pub fn run() {
             commands::aria2_fetch_active_task_list,
             commands::aria2_fetch_task_item,
             commands::aria2_fetch_task_item_with_peers,
+            commands::aria2_get_bt_trackers,
+            commands::aria2_force_bt_recheck,
+            commands::aria2_replace_bt_trackers,
+            commands::aria2_replace_bt_web_seeds,
+            commands::aria2_add_bt_peers,
             commands::aria2_get_version,
-            commands::aria2_get_global_option,
+            commands::aria2_finish_media,
+            commands::aria2_confirm_media,
+            commands::aria2_batch_finish_media,
+            commands::aria2_retry_media,
             commands::aria2_get_global_stat,
             commands::aria2_change_global_option,
             commands::aria2_get_option,
             commands::aria2_change_option,
             commands::aria2_get_files,
             commands::aria2_add_uri,
+            commands::resolve_file_category,
+            commands::validate_file_categories,
+            commands::cancel_download_request,
             commands::aria2_add_torrent,
+            commands::aria2_inspect_torrent,
             commands::aria2_ed2k_search,
             commands::aria2_get_ed2k_search_results,
             commands::aria2_cleanup_ed2k_search,
             commands::aria2_force_remove,
+            commands::aria2_delete_task,
+            commands::task_file_states,
+            commands::aria2_batch_delete_tasks,
+            commands::aria2_finish_sharing,
+            commands::aria2_batch_finish_sharing,
             commands::aria2_force_pause,
             commands::aria2_pause,
             commands::aria2_unpause,
             commands::aria2_save_session,
             commands::aria2_remove_download_result,
-            commands::aria2_purge_download_result,
-            commands::aria2_batch_unpause,
-            commands::aria2_batch_force_pause,
-            commands::aria2_batch_force_remove,
-            commands::wait_for_engine,
+            commands::aria2_purge_task_records,
+            commands::aria2_force_pause_all,
+            commands::aria2_resume_eligible,
             commands::system_shutdown,
             commands::cancel_shutdown,
         ])
@@ -998,7 +887,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::AppLifecycleState;
+    use super::{window_state_flags, AppLifecycleState};
+
+    #[test]
+    fn window_state_restores_only_geometry() {
+        use tauri_plugin_window_state::StateFlags;
+
+        let flags = window_state_flags();
+        assert!(flags.contains(StateFlags::SIZE | StateFlags::POSITION | StateFlags::FULLSCREEN));
+        assert!(!flags.intersects(StateFlags::DECORATIONS | StateFlags::VISIBLE));
+        assert_eq!(
+            flags.contains(StateFlags::MAXIMIZED),
+            !cfg!(target_os = "macos")
+        );
+    }
 
     #[test]
     fn app_lifecycle_starts_cold() {

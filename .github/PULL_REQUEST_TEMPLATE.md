@@ -37,7 +37,7 @@ PR title MUST follow Conventional Commits format.
 <!-- Check what passed. Leave unchecked items explained below. -->
 
 - [ ] Frontend checks passed: `pnpm format:check`, `npx vue-tsc --noEmit`, `pnpm test`
-- [ ] Rust checks passed: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo check --all-targets`, `cargo test --all-targets`
+- [ ] Rust checks passed: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`
 - [ ] Manual testing completed, or not needed for this change
 
 Unchecked checks:
@@ -59,7 +59,7 @@ AI model:
 ## Checklist
 
 - [ ] I kept this PR template complete and understand incomplete PRs may be closed without review
-- [ ] I have read [CONTRIBUTING.md](https://github.com/AnInsomniacy/motrix-next/blob/main/docs/CONTRIBUTING.md)
+- [ ] I have read [CONTRIBUTING.md](https://github.com/AnInsomniacy/rayburst/blob/main/docs/CONTRIBUTING.md)
 - [ ] This PR is focused, under the documented size limits, and uses Conventional Commits
 - [ ] Tests were added or updated for risky logic changes, or this PR explains why tests are not needed
 

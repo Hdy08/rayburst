@@ -40,10 +40,8 @@ unsafe extern "system" fn window_proc(
                 crate::windows_focus::confirm_foreground_focus(hwnd, "probe-main")
             } else {
                 let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-                let opened = tauri::async_runtime::block_on(crate::commands::show_item_in_dir(
-                    path.to_string_lossy().into_owned(),
-                ))
-                .is_ok();
+                let opened =
+                    crate::commands::show_item_in_dir(path.to_string_lossy().into_owned()).is_ok();
                 opened
                     && crate::windows_focus::focus_file_manager_window_for_dir(
                         path.parent().expect("manifest parent"),

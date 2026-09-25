@@ -1,86 +1,9 @@
-use crate::engine::{valid_aria2_log_level, DEFAULT_ARIA2_LOG_LEVEL};
 use crate::error::AppError;
-use crate::log_policy::{
-    is_managed_active_log_file, remove_legacy_log_files, ARIA2_LOG_FILE, MOTRIX_LOG_FILE,
-};
+use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
 use tauri::AppHandle;
 use tauri::Manager;
-
-fn diagnostic_log_zip_path(name: &str) -> Option<String> {
-    if name == MOTRIX_LOG_FILE {
-        Some(format!("motrix-next/{name}"))
-    } else if name == ARIA2_LOG_FILE {
-        Some(format!("aria2-next/{name}"))
-    } else {
-        None
-    }
-}
-
-fn should_export_log_file(path: &Path, name: &str) -> Result<bool, AppError> {
-    let Some(_) = diagnostic_log_zip_path(name) else {
-        return Ok(false);
-    };
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| AppError::Io(format!("Failed to read log metadata: {e}")))?;
-    Ok(metadata.len() > 0)
-}
-
-fn config_aria2_log_level(raw: Option<&Value>) -> &str {
-    raw.and_then(|config| {
-        config
-            .get("preferences")
-            .and_then(|prefs| prefs.get("aria2LogLevel"))
-            .and_then(Value::as_str)
-    })
-    .filter(|level| valid_aria2_log_level(level))
-    .unwrap_or(DEFAULT_ARIA2_LOG_LEVEL)
-}
-
-fn redact_url_credentials(value: &str) -> String {
-    match url::Url::parse(value) {
-        Ok(url) => {
-            let host = url.host_str().unwrap_or("invalid-host");
-            let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
-            let has_auth = !url.username().is_empty() || url.password().is_some();
-            if has_auth {
-                format!("{}://[REDACTED]@{host}{port}", url.scheme())
-            } else {
-                value.to_string()
-            }
-        }
-        Err(_) => value.to_string(),
-    }
-}
-
-fn sanitize_config_snapshot(raw: &Value) -> Value {
-    let mut sanitized = raw.clone();
-    if let Some(prefs) = sanitized
-        .get_mut("preferences")
-        .and_then(Value::as_object_mut)
-    {
-        for key in ["rpcSecret", "extensionApiSecret"] {
-            if let Some(secret) = prefs.get_mut(key) {
-                *secret = Value::String("[REDACTED]".into());
-            }
-        }
-        if let Some(cookie) = prefs.get_mut("cookie") {
-            *cookie = Value::String("[REDACTED]".into());
-        }
-        if let Some(proxy) = prefs.get_mut("proxy").and_then(Value::as_object_mut) {
-            if let Some(server_value) = proxy.get_mut("server") {
-                if let Some(server) = server_value.as_str() {
-                    *server_value = Value::String(redact_url_credentials(server));
-                }
-            }
-            if let Some(password) = proxy.get_mut("password") {
-                *password = Value::String("[REDACTED]".into());
-            }
-        }
-    }
-    sanitized
-}
 
 /// Returns `true` when the current process was launched by the OS
 /// autostart mechanism (the Tauri autostart plugin appends `--autostart`)
@@ -101,8 +24,8 @@ fn sanitize_config_snapshot(raw: &Value) -> Value {
 /// Logging strategy (privacy-safe):
 /// - `info!`: argument count and boolean result only
 /// - `debug!`: structured diagnostics (match type counts) — no raw argv,
-///   because the default log level is `Debug` and diagnostic exports bundle
-///   all log files into user-submitted ZIPs
+///   because diagnostic exports can include debug logs when users enable them
+///   for issue reproduction
 #[tauri::command]
 pub fn is_autostart_launch(lifecycle: tauri::State<'_, crate::AppLifecycleState>) -> bool {
     // After the cold-start phase ends (user dismissed the window at least
@@ -135,8 +58,6 @@ fn clear_managed_log_files_in_dir(log_dir: &Path) -> Result<(), AppError> {
     if !log_dir.exists() {
         return Ok(());
     }
-    remove_legacy_log_files(log_dir)
-        .map_err(|e| AppError::Io(format!("Failed to remove legacy logs: {e}")))?;
     for entry in std::fs::read_dir(log_dir)
         .map_err(|e| AppError::Io(format!("Failed to read log dir: {e}")))?
         .flatten()
@@ -149,12 +70,15 @@ fn clear_managed_log_files_in_dir(log_dir: &Path) -> Result<(), AppError> {
         if !path.is_file() {
             continue;
         }
-        if is_managed_active_log_file(name) {
+        if crate::log_policy::is_managed_active_log_file(name) {
             std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
                 .open(&path)
                 .map_err(|e| AppError::Io(format!("Failed to clear active log: {e}")))?;
+        } else if crate::log_policy::managed_log_source(name).is_some() {
+            std::fs::remove_file(&path)
+                .map_err(|e| AppError::Io(format!("Failed to remove rotated log: {e}")))?;
         }
     }
     Ok(())
@@ -170,15 +94,7 @@ pub fn clear_log_file(app: AppHandle) -> Result<(), AppError> {
     clear_managed_log_files_in_dir(&log_dir)
 }
 
-/// Collects all log files from the app log directory and compresses them
-/// into a ZIP archive at the user-specified path (chosen via a save dialog
-/// on the frontend). Includes:
-/// - `system-info.json` with enriched machine/runtime context for diagnostics
-/// - Motrix Next logs under `motrix-next/`
-/// - Aria2 Next logs under `aria2-next/`
-/// - `config.json` user configuration snapshot for issue reproduction
-///
-/// Returns the full path to the created ZIP file.
+/// Exports a redacted runtime snapshot and the complete application and engine logs.
 #[tauri::command]
 pub async fn export_diagnostic_logs(app: AppHandle, save_path: String) -> Result<String, AppError> {
     let log_dir = app
@@ -191,12 +107,6 @@ pub async fn export_diagnostic_logs(app: AppHandle, save_path: String) -> Result
     }
 
     let zip_path = std::path::PathBuf::from(&save_path);
-
-    let zip_file = std::fs::File::create(&zip_path)
-        .map_err(|e| AppError::Io(format!("Failed to create zip: {}", e)))?;
-    let mut zip_writer = zip::ZipWriter::new(zip_file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
 
     let data_dir = app
         .path()
@@ -220,82 +130,29 @@ pub async fn export_diagnostic_logs(app: AppHandle, save_path: String) -> Result
     } else {
         None
     };
-    // ── System info: enriched machine context for diagnostics ────────
-    let pkg = app.package_info();
-    let engine_pid = app
-        .state::<crate::engine::EngineState>()
-        .child
-        .lock()
-        .expect("engine state lock poisoned")
-        .as_ref()
-        .map(tauri_plugin_shell::process::CommandChild::pid);
-    let system_info = serde_json::json!({
-        "os": std::env::consts::OS,
-        "os_version": os_info::get().version().to_string(),
-        "arch": std::env::consts::ARCH,
-        "locale": sys_locale::get_locale().unwrap_or_default(),
-        "app_version": pkg.version.to_string(),
-        "app_name": pkg.name,
-        "motrix_next_log_level": format!("{}", crate::read_log_level()),
-        "aria2_next_log_level": config_aria2_log_level(raw_config.as_ref()),
-        "engine_pid": engine_pid,
-        "webkit_dmabuf_disabled": std::env::var(crate::gpu_guard::WEBKIT_DISABLE_DMABUF_RENDERER).unwrap_or_default(),
-        "webkit_compositing_disabled": std::env::var(crate::gpu_guard::WEBKIT_DISABLE_COMPOSITING_MODE).unwrap_or_default(),
-        "webkit_hardware_acceleration_enabled": crate::gpu_guard::is_hardware_rendering_enabled(),
-        "appimage": std::env::var("APPIMAGE").unwrap_or_default(),
-        "appdir": std::env::var("APPDIR").unwrap_or_default(),
-        "xdg_session_type": std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
-        "gdk_backend": std::env::var("GDK_BACKEND").unwrap_or_default(),
-        "exported_at": chrono::Local::now().to_rfc3339(),
-    });
-    let info_bytes = serde_json::to_vec_pretty(&system_info)
-        .map_err(|e| AppError::Io(format!("Failed to serialize system info: {}", e)))?;
-    zip_writer
-        .start_file("system-info.json", options)
-        .map_err(|e| AppError::Io(format!("Failed to add system-info.json: {}", e)))?;
-    std::io::Write::write_all(&mut zip_writer, &info_bytes)
-        .map_err(|e| AppError::Io(format!("Failed to write system-info.json: {}", e)))?;
-
-    // ── Log files ───────────────────────────────────────────────────
-    let entries = std::fs::read_dir(&log_dir)
-        .map_err(|e| AppError::Io(format!("Failed to read log dir: {}", e)))?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            let Some(zip_name) = diagnostic_log_zip_path(&name) else {
-                continue;
-            };
-            if !should_export_log_file(&path, &name)? {
-                continue;
-            }
-            let content = std::fs::read(&path)
-                .map_err(|e| AppError::Io(format!("Failed to read {}: {}", name, e)))?;
-            zip_writer
-                .start_file(zip_name, options)
-                .map_err(|e| AppError::Io(format!("Failed to add {} to zip: {}", name, e)))?;
-            std::io::Write::write_all(&mut zip_writer, &content)
-                .map_err(|e| AppError::Io(format!("Failed to write {}: {}", name, e)))?;
-        }
+    log::logger().flush();
+    if let (Some(state), Some(level)) = (
+        app.try_state::<crate::services::tasks::TaskServiceState>(),
+        raw_config
+            .as_ref()
+            .and_then(|value| value.get("preferences"))
+            .and_then(|value| value.get("aria2LogLevel"))
+            .and_then(Value::as_str),
+    ) {
+        let mut log_option = serde_json::Map::new();
+        log_option.insert("log-level".to_string(), Value::String(level.to_string()));
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            state.0.change_global_option(log_option),
+        )
+        .await;
     }
 
-    // ── Config snapshot: user preferences for issue reproduction ─────
-    if let Some(value) = raw_config {
-        let sanitized = serde_json::to_vec_pretty(&sanitize_config_snapshot(&value))
-            .map_err(|e| AppError::Io(format!("Failed to sanitize config: {}", e)))?;
-        zip_writer
-            .start_file("config.json", options)
-            .map_err(|e| AppError::Io(format!("Failed to add config.json: {}", e)))?;
-        std::io::Write::write_all(&mut zip_writer, &sanitized)
-            .map_err(|e| AppError::Io(format!("Failed to write config.json: {}", e)))?;
-    }
+    let logs = crate::diagnostics::collect_logs(&log_dir)?;
+    let diagnostics = crate::diagnostics::runtime_snapshot(&app, raw_config.as_ref()).await;
+    crate::diagnostics::write_archive(&zip_path, &logs, &diagnostics)?;
 
-    zip_writer
-        .finish()
-        .map_err(|e| AppError::Io(format!("Failed to finalize zip: {}", e)))?;
-
-    log::info!("Exported diagnostic logs to {}", zip_path.display());
+    log::info!(target: "diagnostics", event = "diagnostics_exported", path:% = zip_path.display(); "diagnostics_exported");
     Ok(crate::engine::path_to_safe_string(&zip_path))
 }
 
@@ -304,146 +161,34 @@ mod export_tests {
     use super::*;
 
     #[test]
-    fn redact_url_credentials_masks_auth_section() {
-        assert_eq!(
-            redact_url_credentials("http://user:pass@example.com:8080"),
-            "http://[REDACTED]@example.com:8080"
-        );
-    }
-
-    #[test]
-    fn sanitize_config_snapshot_redacts_api_secrets_cookie_and_proxy_server() {
-        let raw = serde_json::json!({
-            "preferences": {
-                "rpcSecret": "secret",
-                "extensionApiSecret": "api-secret",
-                "cookie": "session=abc",
-                "proxy": {
-                    "server": "http://user:pass@example.com:8080",
-                    "password": "proxy-secret"
-                }
-            }
-        });
-        let sanitized = sanitize_config_snapshot(&raw);
-        let prefs = sanitized
-            .get("preferences")
-            .and_then(Value::as_object)
-            .expect("preferences object must exist");
-        assert_eq!(
-            prefs.get("rpcSecret").and_then(Value::as_str),
-            Some("[REDACTED]")
-        );
-        assert_eq!(
-            prefs.get("extensionApiSecret").and_then(Value::as_str),
-            Some("[REDACTED]")
-        );
-        assert_eq!(
-            prefs.get("cookie").and_then(Value::as_str),
-            Some("[REDACTED]")
-        );
-        assert_eq!(
-            prefs
-                .get("proxy")
-                .and_then(Value::as_object)
-                .and_then(|proxy| proxy.get("server"))
-                .and_then(Value::as_str),
-            Some("http://[REDACTED]@example.com:8080")
-        );
-        assert_eq!(
-            prefs
-                .get("proxy")
-                .and_then(Value::as_object)
-                .and_then(|proxy| proxy.get("password"))
-                .and_then(Value::as_str),
-            Some("[REDACTED]")
-        );
-    }
-
-    #[test]
-    fn diagnostic_log_zip_path_separates_motrix_and_aria2_logs_without_export_toggle() {
-        assert_eq!(
-            diagnostic_log_zip_path("motrix-next.log"),
-            Some("motrix-next/motrix-next.log".to_string())
-        );
-        assert_eq!(
-            diagnostic_log_zip_path("aria2-next.log"),
-            Some("aria2-next/aria2-next.log".to_string())
-        );
-        assert_eq!(diagnostic_log_zip_path("aria2-next.1.log"), None);
-        assert_eq!(diagnostic_log_zip_path("aria2-next.log.1"), None);
-        assert_eq!(diagnostic_log_zip_path("other.log"), None);
-        assert_eq!(diagnostic_log_zip_path("motrix-next.log.1"), None);
-    }
-
-    #[test]
-    fn clear_managed_log_files_truncates_active_logs_and_removes_legacy_logs() {
+    fn clear_managed_log_files_truncates_active_logs_and_removes_rotations() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let motrix = dir.path().join("motrix-next.log");
+        let rayburst = dir.path().join("rayburst.log");
         let aria2 = dir.path().join("aria2-next.log");
         let rotated = dir.path().join("aria2-next.1.log");
-        let current_rotated = dir.path().join("aria2-next.log.1");
-        let motrix_rotated = dir.path().join("motrix-next.log.1");
+        let rayburst_rotated = dir.path().join("rayburst_2026-08-27_12-00-00.log");
         let other = dir.path().join("other.log");
 
-        std::fs::write(&motrix, "motrix log").expect("motrix log");
+        std::fs::write(&rayburst, "rayburst log").expect("rayburst log");
         std::fs::write(&aria2, "aria2 log").expect("aria2 log");
         std::fs::write(&rotated, "rotated log").expect("rotated log");
-        std::fs::write(&current_rotated, "rotated log").expect("current rotated log");
-        std::fs::write(&motrix_rotated, "rotated log").expect("motrix rotated log");
+        std::fs::write(&rayburst_rotated, "rotated log").expect("rayburst rotated log");
         std::fs::write(&other, "other log").expect("other log");
 
         clear_managed_log_files_in_dir(dir.path()).expect("clear logs");
 
         assert_eq!(
-            std::fs::metadata(&motrix).expect("motrix metadata").len(),
+            std::fs::metadata(&rayburst)
+                .expect("rayburst metadata")
+                .len(),
             0
         );
         assert_eq!(std::fs::metadata(&aria2).expect("aria2 metadata").len(), 0);
         assert!(!rotated.exists());
-        assert!(!current_rotated.exists());
-        assert!(!motrix_rotated.exists());
+        assert!(!rayburst_rotated.exists());
         assert_eq!(
             std::fs::read_to_string(&other).expect("other content"),
             "other log"
-        );
-    }
-
-    #[test]
-    fn should_export_log_file_skips_empty_logs() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let empty = dir.path().join("aria2-next.log");
-        let non_empty = dir.path().join("motrix-next.log");
-        let other = dir.path().join("other.log");
-
-        std::fs::write(&empty, "").expect("empty log");
-        std::fs::write(&non_empty, "log").expect("non-empty log");
-        std::fs::write(&other, "log").expect("other log");
-
-        assert!(!should_export_log_file(&empty, "aria2-next.log").expect("empty export"));
-        assert!(should_export_log_file(&non_empty, "motrix-next.log").expect("non-empty export"));
-        assert!(!should_export_log_file(&other, "other.log").expect("other export"));
-    }
-
-    #[test]
-    fn config_aria2_log_level_reads_current_field_only() {
-        assert_eq!(config_aria2_log_level(None), "info");
-        assert_eq!(
-            config_aria2_log_level(Some(&serde_json::json!({
-                "preferences": { "aria2LogLevel": "debug" }
-            }))),
-            "debug"
-        );
-        assert_eq!(
-            config_aria2_log_level(Some(&serde_json::json!({
-                "preferences": { "aria2LogLevel": "verbose" }
-            }))),
-            "info"
-        );
-        assert_eq!(
-            config_aria2_log_level(Some(&serde_json::json!({
-                "preferences": { "aria2LogsEnabled": false }
-            }))),
-            "info"
         );
     }
 }
@@ -482,173 +227,6 @@ pub fn check_path_is_dir(path: String) -> bool {
 #[tauri::command]
 pub fn read_local_file(path: String) -> Result<Vec<u8>, AppError> {
     std::fs::read(&path).map_err(|e| AppError::Io(format!("Failed to read file: {e}")))
-}
-
-const MAX_LOCAL_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
-// Supports common 6K wallpapers such as 6400x4496 while bounding decoded
-// image memory before the renderer creates its separately capped canvas.
-const MAX_LOCAL_IMAGE_PIXELS: u64 = 32_000_000;
-
-fn local_image_format(extension: &str) -> Option<image::ImageFormat> {
-    match extension {
-        "png" => Some(image::ImageFormat::Png),
-        "jpg" | "jpeg" => Some(image::ImageFormat::Jpeg),
-        "webp" => Some(image::ImageFormat::WebP),
-        "bmp" => Some(image::ImageFormat::Bmp),
-        "gif" => Some(image::ImageFormat::Gif),
-        _ => None,
-    }
-}
-
-fn validate_local_image_dimensions(width: u32, height: u32) -> Result<(), AppError> {
-    let pixel_count = u64::from(width) * u64::from(height);
-    if width == 0 || height == 0 || pixel_count > MAX_LOCAL_IMAGE_PIXELS {
-        return Err(AppError::Io(format!(
-            "Background image dimensions exceed the {} megapixel limit",
-            MAX_LOCAL_IMAGE_PIXELS / 1_000_000
-        )));
-    }
-    Ok(())
-}
-
-fn read_validated_local_image(path: &str) -> Result<(Vec<u8>, String), AppError> {
-    use std::io::Read;
-
-    let path = std::path::Path::new(path);
-    let extension = path
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| AppError::Io("Unsupported background image format".into()))?;
-    let image_format = local_image_format(&extension)
-        .ok_or_else(|| AppError::Io("Unsupported background image format".into()))?;
-
-    let canonical_path = dunce::canonicalize(path)
-        .map_err(|e| AppError::Io(format!("Failed to resolve background image: {e}")))?;
-    let mut file = std::fs::File::open(&canonical_path)
-        .map_err(|e| AppError::Io(format!("Failed to open background image: {e}")))?;
-    let metadata = file
-        .metadata()
-        .map_err(|e| AppError::Io(format!("Failed to inspect background image: {e}")))?;
-    if !metadata.is_file() {
-        return Err(AppError::Io("Background image path is not a file".into()));
-    }
-    if metadata.len() > MAX_LOCAL_IMAGE_BYTES {
-        return Err(AppError::Io(format!(
-            "Background image exceeds the {} MiB limit",
-            MAX_LOCAL_IMAGE_BYTES / 1024 / 1024
-        )));
-    }
-
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.by_ref()
-        .take(MAX_LOCAL_IMAGE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| AppError::Io(format!("Failed to read background image: {e}")))?;
-    if bytes.len() as u64 > MAX_LOCAL_IMAGE_BYTES {
-        return Err(AppError::Io(format!(
-            "Background image exceeds the {} MiB limit",
-            MAX_LOCAL_IMAGE_BYTES / 1024 / 1024
-        )));
-    }
-
-    let (width, height) =
-        image::ImageReader::with_format(std::io::Cursor::new(&bytes), image_format)
-            .into_dimensions()
-            .map_err(|e| {
-                AppError::Io(format!(
-                    "Failed to inspect background image dimensions: {e}"
-                ))
-            })?;
-    validate_local_image_dimensions(width, height)?;
-
-    Ok((bytes, extension))
-}
-
-const LOCAL_IMAGE_CACHE_DIRECTORY: &str = "motrix-background";
-// Serializes cache replacement so an older IPC request cannot remove the cache
-// file returned to a newer request that completed first.
-static LOCAL_IMAGE_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn remove_stale_local_image_cache_entries(cache_dir: &Path, current_path: &Path) {
-    let Ok(entries) = std::fs::read_dir(cache_dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path == current_path {
-            continue;
-        }
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_file() {
-            if let Err(error) = std::fs::remove_file(path) {
-                log::debug!("Failed to remove stale cached background image: {error}");
-            }
-        }
-    }
-}
-
-fn cache_local_image(
-    cache_dir: &Path,
-    bytes: &[u8],
-    extension: &str,
-) -> Result<std::path::PathBuf, AppError> {
-    use std::io::Write;
-
-    std::fs::create_dir_all(cache_dir)
-        .map_err(|e| AppError::Io(format!("Failed to create background cache directory: {e}")))?;
-
-    let suffix = format!(".{extension}");
-    let mut cache_file = tempfile::Builder::new()
-        .prefix("background-")
-        .suffix(&suffix)
-        .tempfile_in(cache_dir)
-        .map_err(|e| AppError::Io(format!("Failed to create cached background image: {e}")))?;
-    cache_file
-        .write_all(bytes)
-        .map_err(|e| AppError::Io(format!("Failed to cache background image: {e}")))?;
-    cache_file
-        .as_file()
-        .sync_all()
-        .map_err(|e| AppError::Io(format!("Failed to finalize cached background image: {e}")))?;
-    let (_, cache_path) = cache_file.keep().map_err(|e| {
-        AppError::Io(format!(
-            "Failed to finalize cached background image: {}",
-            e.error
-        ))
-    })?;
-
-    remove_stale_local_image_cache_entries(cache_dir, &cache_path);
-    Ok(cache_path)
-}
-
-/// Validates a user-selected image and copies it into the application's scoped
-/// asset cache. The frontend receives only that cache path, never the original
-/// user-selected path, so the WebView cannot access arbitrary local files.
-#[tauri::command]
-pub fn prepare_local_background(app: AppHandle, path: String) -> Result<String, AppError> {
-    let _cache_lock = match LOCAL_IMAGE_CACHE_LOCK.lock() {
-        Ok(lock) => lock,
-        Err(poisoned) => {
-            log::warn!("Recovering poisoned background image cache lock");
-            poisoned.into_inner()
-        }
-    };
-    let (bytes, extension) = read_validated_local_image(&path)?;
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| AppError::Io(format!("Failed to resolve background cache directory: {e}")))?
-        .join(LOCAL_IMAGE_CACHE_DIRECTORY);
-    let cache_path = cache_local_image(&cache_dir, &bytes, &extension)?;
-
-    cache_path
-        .into_os_string()
-        .into_string()
-        .map_err(|_| AppError::Io("Cached background image path is not valid UTF-8".into()))
 }
 
 /// Lists regular file names in a directory.
@@ -717,33 +295,39 @@ pub(crate) fn normalize_path(raw: &str) -> String {
 ///
 /// Delegates to `tauri_plugin_opener::reveal_item_in_dir` (no UNC bug on these
 /// platforms — macOS uses `NSWorkspace`, Linux uses D-Bus FileManager1).
-#[cfg(not(windows))]
 #[tauri::command]
 pub fn show_item_in_dir(path: String) -> Result<(), AppError> {
-    reveal_normalized_path(&path)
-}
-
-#[cfg(windows)]
-#[tauri::command]
-pub async fn show_item_in_dir(path: String) -> Result<(), AppError> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    // Shell COM operations may wait for Explorer. Keep them off the Tauri UI
-    // thread and use one fresh apartment for opening, matching and focusing.
-    std::thread::Builder::new()
-        .name("file-reveal".into())
-        .spawn(move || {
-            let _ = sender.send(reveal_normalized_path(&path));
-        })
-        .map_err(|error| AppError::Io(format!("Failed to start file reveal: {error}")))?;
-    receiver
-        .await
-        .map_err(|error| AppError::Io(format!("File reveal interrupted: {error}")))?
-}
-
-fn reveal_normalized_path(path: &str) -> Result<(), AppError> {
-    let normalized = normalize_path(path);
+    let normalized = normalize_path(&path);
     log::debug!("show_item_in_dir: original={path:?} normalized={normalized:?}");
     reveal_in_explorer(&normalized)
+}
+
+#[tauri::command]
+pub async fn show_notification_item_in_dir(path: String) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || {
+        let normalized = normalize_path(&path);
+        reveal_in_explorer(&normalized)?;
+        #[cfg(target_os = "windows")]
+        {
+            let target = Path::new(&normalized);
+            let directory = if target.is_dir() {
+                target
+            } else {
+                target.parent().unwrap_or(target)
+            };
+            if !crate::windows_focus::focus_file_manager_window_for_dir(
+                directory,
+                "notification-folder",
+            ) {
+                log::warn!(
+                    "notification: explorer opened without foreground focus path={normalized:?}"
+                );
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| AppError::Io(format!("Notification file reveal failed: {error}")))?
 }
 
 /// Platform-dispatched implementation for revealing files in the explorer.
@@ -763,10 +347,9 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
     use std::path::PathBuf;
     use windows_sys::Win32::{
         Foundation::ERROR_FILE_NOT_FOUND,
+        System::Com::CoInitializeEx,
         UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems},
     };
-    let _com = crate::windows_toast::Apartment::new()
-        .map_err(|error| AppError::Io(format!("Shell COM initialization failed: {error}")))?;
 
     // Step 1: Best-effort canonicalization.
     // `dunce::canonicalize` resolves symlinks and strips `\\?\` for local drives.
@@ -784,11 +367,11 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
     // `\\?\UNC\server\share\file` → `\\server\share\file`
     // This is the fix for GitHub issue #3304.
     let path_str = canonical.to_string_lossy();
-    let fixed: PathBuf = if let Some(stripped) = path_str.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{stripped}"))
-    } else if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+    let fixed: PathBuf = if let Some(suffix) = path_str.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{suffix}"))
+    } else if let Some(suffix) = path_str.strip_prefix(r"\\?\") {
         // Shouldn't happen (dunce handles this), but defensive
-        PathBuf::from(stripped)
+        PathBuf::from(suffix)
     } else {
         canonical.clone()
     };
@@ -805,6 +388,9 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
     let file_wide = to_wide(fixed.to_string_lossy().as_ref());
 
     unsafe {
+        // Initialize COM (required for Shell APIs, idempotent).
+        let _ = CoInitializeEx(std::ptr::null(), 0);
+
         // Convert parent directory to ITEMIDLIST.
         let parent_pidl = ILCreateFromPathW(parent_wide.as_ptr());
         if parent_pidl.is_null() {
@@ -826,7 +412,7 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
         // Electron-style fallback: on ERROR_FILE_NOT_FOUND, use ShellExecuteW.
         // "On some systems, the above call mysteriously fails with 'file not found'
         //  even though the file is there." — Electron source
-        if result as u32 == (0x80070000 | ERROR_FILE_NOT_FOUND) {
+        if result != 0 && (result as u32) == ERROR_FILE_NOT_FOUND {
             ILFree(file_pidl);
             ILFree(parent_pidl);
             return shell_execute_open(parent.to_string_lossy().as_ref());
@@ -842,10 +428,6 @@ fn reveal_in_explorer(path: &str) -> Result<(), AppError> {
         }
     }
 
-    if !crate::windows_focus::focus_file_manager_window_for_dir(parent, "reveal-in-explorer") {
-        log::warn!("reveal_in_explorer: failed to focus parent={parent:?}");
-    }
-
     Ok(())
 }
 
@@ -857,6 +439,7 @@ fn shell_execute_open(dir: &str) -> Result<(), AppError> {
 
     let dir_wide = to_wide(dir);
     let verb_wide = to_wide("explore");
+
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(), // hwnd
@@ -871,12 +454,6 @@ fn shell_execute_open(dir: &str) -> Result<(), AppError> {
     if (result as isize) <= 32 {
         Err(AppError::Io(format!("ShellExecuteW failed for {dir:?}")))
     } else {
-        if !crate::windows_focus::focus_file_manager_window_for_dir(
-            Path::new(dir),
-            "shell-execute-open",
-        ) {
-            log::warn!("shell_execute_open: failed to focus dir={dir:?}");
-        }
         Ok(())
     }
 }
@@ -902,120 +479,40 @@ pub fn open_path_normalized(app: AppHandle, path: String) -> Result<(), AppError
         .map_err(|e| AppError::Io(format!("Failed to open {}: {}", path, e)))
 }
 
-/// Moves a file to the OS trash / recycle bin.
-///
-/// Uses the `trash` crate for cross-platform support:
-/// - macOS: NSFileManager.trashItemAtURL
-/// - Windows: IFileOperation + FOFX_RECYCLEONDELETE
-/// - Linux: FreeDesktop Trash spec (XDG_DATA_HOME/Trash)
-#[tauri::command]
-pub fn trash_file(path: String) -> Result<(), AppError> {
-    log::info!("file:trash path={path:?}");
-    trash::delete(&path).map_err(|e| AppError::Io(e.to_string()))
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileDeletionMode {
+    Trash,
+    Permanent,
 }
 
-/// Moves a file to a target directory, creating the directory if needed.
-///
-/// Uses `std::fs::rename` for same-filesystem moves (zero-copy, atomic).
-/// Falls back to copy+delete for cross-filesystem moves (e.g. NAS, external drives).
-/// Returns the absolute path of the moved file.
-///
-/// Used by the auto-archive feature to relocate completed downloads into
-/// category directories based on file extension classification.
 #[tauri::command]
-pub fn move_file(source: String, target_dir: String) -> Result<String, AppError> {
-    let src = Path::new(&source);
-    if !src.is_file() {
-        return Err(AppError::Io(format!("Source is not a file: {source:?}")));
+pub fn delete_path(path: String, mode: FileDeletionMode) -> Result<bool, AppError> {
+    if path.trim().is_empty() {
+        return Ok(false);
     }
 
-    let target = Path::new(&target_dir);
-    if !target.exists() {
-        std::fs::create_dir_all(target)
-            .map_err(|e| AppError::Io(format!("Failed to create directory {target_dir:?}: {e}")))?;
-    }
-
-    let file_name = src
-        .file_name()
-        .ok_or_else(|| AppError::Io(format!("Cannot extract filename from {source:?}")))?;
-    let dest = target.join(file_name);
-
-    // Avoid overwriting existing files — append (1), (2), etc.
-    let dest = if dest.exists() {
-        let stem = dest
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let ext = dest.extension().map(|e| e.to_string_lossy().to_string());
-        let mut counter = 1u32;
-        loop {
-            let new_name = match &ext {
-                Some(e) => format!("{stem} ({counter}).{e}"),
-                None => format!("{stem} ({counter})"),
-            };
-            let candidate = target.join(&new_name);
-            if !candidate.exists() {
-                break candidate;
-            }
-            counter += 1;
-            if counter > 999 {
-                return Err(AppError::Io(format!(
-                    "Too many name collisions for {file_name:?} in {target_dir:?}"
-                )));
-            }
-        }
-    } else {
-        dest
+    let target = Path::new(&path);
+    let metadata = match std::fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(AppError::Io(error.to_string())),
     };
 
-    log::info!("file:move {source:?} → {dest:?}");
-
-    // Try rename first (same filesystem = atomic, zero-copy)
-    match std::fs::rename(src, &dest) {
-        Ok(()) => {}
-        Err(e)
-            if e.raw_os_error() == Some(18 /* EXDEV */)
-                || e.kind() == std::io::ErrorKind::Other =>
-        {
-            // Cross-filesystem: copy + delete
-            std::fs::copy(src, &dest)
-                .map_err(|e| AppError::Io(format!("Failed to copy {source:?} to {dest:?}: {e}")))?;
-            std::fs::remove_file(src).map_err(|e| {
-                AppError::Io(format!(
-                    "File copied to {dest:?} but failed to remove source {source:?}: {e}"
-                ))
-            })?;
+    log::info!("file:delete mode={mode:?} path={path:?}");
+    match mode {
+        FileDeletionMode::Trash => {
+            trash::delete(target).map_err(|error| AppError::Io(error.to_string()))?
         }
-        Err(e) => {
-            return Err(AppError::Io(format!(
-                "Failed to move {source:?} to {dest:?}: {e}"
-            )));
+        FileDeletionMode::Permanent if metadata.file_type().is_dir() => {
+            std::fs::remove_dir_all(target).map_err(|error| AppError::Io(error.to_string()))?;
+        }
+        FileDeletionMode::Permanent => {
+            std::fs::remove_file(target).map_err(|error| AppError::Io(error.to_string()))?;
         }
     }
 
-    // Normalize to forward slashes — aria2 and the frontend canonicalize
-    // all paths with `/`.  On Windows, PathBuf::join() produces `\`.
-    Ok(crate::engine::path_to_safe_string(&dest).replace('\\', "/"))
-}
-
-/// Permanently deletes a file from disk (NOT move to trash).
-///
-/// Used for internal aria2 metadata files that have no user value:
-/// - `.aria2` control files (piece bitmap + checksums)
-/// - hex40-named `.torrent` metadata (`rpc-save-upload-metadata`)
-///
-/// This replicates what aria2's native `removeControlFile()` does (`std::remove`).
-/// The frontend MUST only call this for files it has verified are internal
-/// aria2 metadata — never for user-downloaded content (use `trash_file` instead).
-#[tauri::command]
-pub fn remove_file(path: String) -> Result<(), AppError> {
-    let p = std::path::Path::new(&path);
-    if !p.exists() {
-        return Ok(());
-    }
-    log::debug!("file:remove path={path:?}");
-    std::fs::remove_file(p).map_err(|e| AppError::Io(e.to_string()))
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1052,7 +549,7 @@ mod tests {
     #[test]
     fn check_path_exists_handles_path_with_spaces() {
         // Create a temp file with spaces in the path
-        let dir = std::env::temp_dir().join("motrix test spaces");
+        let dir = std::env::temp_dir().join("rayburst test spaces");
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("test file.txt");
         let _ = std::fs::write(&file, "test");
@@ -1086,122 +583,32 @@ mod tests {
         assert!(!check_path_is_dir(String::new()));
     }
 
-    // ── prepare_local_background ─────────────────────────────────────
-
-    #[test]
-    fn read_validated_local_image_accepts_supported_files_within_limit() {
-        let directory = tempfile::tempdir().expect("create image fixture directory");
-        let path = directory.path().join("background.png");
-        image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]))
-            .save_with_format(&path, image::ImageFormat::Png)
-            .expect("write image fixture");
-
-        let (bytes, extension) =
-            read_validated_local_image(path.to_string_lossy().as_ref()).expect("valid image");
-
-        assert!(!bytes.is_empty());
-        assert_eq!(extension, "png");
-    }
-
-    #[test]
-    fn read_validated_local_image_rejects_malformed_images() {
-        let mut file = tempfile::Builder::new()
-            .suffix(".png")
-            .tempfile()
-            .expect("create malformed image fixture");
-        std::io::Write::write_all(&mut file, b"not-an-image").expect("write malformed fixture");
-
-        let Err(error) = read_validated_local_image(file.path().to_string_lossy().as_ref()) else {
-            panic!("malformed image must fail");
-        };
-
-        assert!(error
-            .to_string()
-            .contains("Failed to inspect background image dimensions"));
-    }
-
-    #[test]
-    fn local_image_dimensions_allow_common_wallpapers_and_reject_pixel_bombs() {
-        assert!(validate_local_image_dimensions(6_400, 4_496).is_ok());
-        assert!(validate_local_image_dimensions(8_000, 4_000).is_ok());
-
-        let Err(error) = validate_local_image_dimensions(8_000, 4_001) else {
-            panic!("oversized image dimensions must fail");
-        };
-
-        assert!(error
-            .to_string()
-            .contains("dimensions exceed the 32 megapixel limit"));
-    }
-
-    #[test]
-    fn read_validated_local_image_rejects_unsupported_extensions() {
-        let file = tempfile::Builder::new()
-            .suffix(".txt")
-            .tempfile()
-            .expect("create unsupported fixture");
-
-        let Err(error) = read_validated_local_image(file.path().to_string_lossy().as_ref()) else {
-            panic!("unsupported image must fail");
-        };
-
-        assert!(error
-            .to_string()
-            .contains("Unsupported background image format"));
-    }
-
-    #[test]
-    fn read_validated_local_image_rejects_files_over_limit_before_reading() {
-        let file = tempfile::Builder::new()
-            .suffix(".webp")
-            .tempfile()
-            .expect("create oversized fixture");
-        file.as_file()
-            .set_len(MAX_LOCAL_IMAGE_BYTES + 1)
-            .expect("resize oversized fixture");
-
-        let Err(error) = read_validated_local_image(file.path().to_string_lossy().as_ref()) else {
-            panic!("oversized image must fail");
-        };
-
-        assert!(error.to_string().contains("exceeds the 16 MiB limit"));
-    }
-
-    #[test]
-    fn cache_local_image_keeps_only_the_current_image() {
-        let directory = tempfile::tempdir().expect("create image cache directory");
-        let cache_dir = directory.path().join(LOCAL_IMAGE_CACHE_DIRECTORY);
-        let first = cache_local_image(&cache_dir, b"first", "png").expect("cache first image");
-        let second = cache_local_image(&cache_dir, b"second", "png").expect("cache second image");
-
-        assert_eq!(
-            std::fs::read(&second).expect("read cached image"),
-            b"second"
-        );
-        assert!(!first.exists());
-        let file_count = std::fs::read_dir(&cache_dir)
-            .expect("read image cache directory")
-            .flatten()
-            .filter_map(|entry| entry.file_type().ok())
-            .filter(std::fs::FileType::is_file)
-            .count();
-        assert_eq!(file_count, 1);
-    }
-
     // ── normalize_path ─────────────────────────────────────────────────
 
-    #[cfg(not(target_os = "windows"))]
     #[test]
     fn normalize_path_preserves_simple_unix_path() {
         let result = normalize_path("/home/user/downloads/file.txt");
-        assert_eq!(result, "/home/user/downloads/file.txt");
+        assert_eq!(
+            result,
+            if cfg!(windows) {
+                r"\home\user\downloads\file.txt"
+            } else {
+                "/home/user/downloads/file.txt"
+            }
+        );
     }
 
-    #[cfg(not(target_os = "windows"))]
     #[test]
     fn normalize_path_preserves_path_with_spaces() {
         let result = normalize_path("/home/user/my downloads/file name.txt");
-        assert_eq!(result, "/home/user/my downloads/file name.txt");
+        assert_eq!(
+            result,
+            if cfg!(windows) {
+                r"\home\user\my downloads\file name.txt"
+            } else {
+                "/home/user/my downloads/file name.txt"
+            }
+        );
     }
 
     #[test]
@@ -1214,8 +621,8 @@ mod tests {
     #[test]
     fn normalize_path_fixes_mixed_separators_windows() {
         // aria2 returns `Z:\\` + JS joins with `/` → `Z:\\/file.exe`
-        let result = normalize_path("Z:\\/MotrixNext_setup.exe");
-        assert_eq!(result, "Z:\\MotrixNext_setup.exe");
+        let result = normalize_path("Z:\\/Rayburst_setup.exe");
+        assert_eq!(result, "Z:\\Rayburst_setup.exe");
     }
 
     #[cfg(target_os = "windows")]
@@ -1240,85 +647,88 @@ mod tests {
         assert_eq!(result, "\\\\server\\share\\file.txt");
     }
 
-    #[cfg(not(target_os = "windows"))]
     #[test]
     fn normalize_path_handles_forward_slash_only() {
         // Pure forward-slash paths (cross-platform compatible)
         let result = normalize_path("/var/log/app.log");
-        assert_eq!(result, "/var/log/app.log");
+        assert_eq!(
+            result,
+            if cfg!(windows) {
+                r"\var\log\app.log"
+            } else {
+                "/var/log/app.log"
+            }
+        );
     }
 
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn normalize_path_reassembles_forward_slash_absolute_windows() {
-        let result = normalize_path("/var/log/app.log");
-        assert_eq!(result, "\\var\\log\\app.log");
-    }
-
-    // ── remove_file ─────────────────────────────────────────────────
+    // ── delete_path ─────────────────────────────────────────────────
 
     #[test]
-    fn remove_file_deletes_existing_file() {
-        let dir = std::env::temp_dir().join("motrix_test_remove");
-        let _ = std::fs::create_dir_all(&dir);
-        let file = dir.join("test.aria2");
-        std::fs::write(&file, "control data").expect("write test file");
-        assert!(file.exists(), "precondition: file must exist");
+    fn delete_path_permanently_deletes_existing_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let file = dir.path().join("test.bin");
+        std::fs::write(&file, "data").expect("write test file");
 
-        let result = remove_file(file.to_string_lossy().to_string());
-        assert!(result.is_ok());
+        let result = delete_path(
+            file.to_string_lossy().to_string(),
+            FileDeletionMode::Permanent,
+        );
+        assert!(result.expect("delete file"));
         assert!(!file.exists(), "file must be permanently deleted");
-
-        // Cleanup
-        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
-    fn remove_file_returns_ok_for_nonexistent() {
-        let result = remove_file("/definitely/does/not/exist/file.aria2".to_string());
+    fn delete_path_permanently_deletes_directory_tree() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let directory = root.path().join("download");
+        std::fs::create_dir_all(directory.join("nested")).expect("create directory tree");
+        std::fs::write(directory.join("nested/file.bin"), "data").expect("write file");
+
+        let result = delete_path(
+            directory.to_string_lossy().to_string(),
+            FileDeletionMode::Permanent,
+        );
+        assert!(result.expect("delete directory"));
         assert!(
-            result.is_ok(),
-            "remove_file must be a silent no-op for missing files"
+            !directory.exists(),
+            "directory tree must be permanently deleted"
         );
     }
 
     #[test]
-    fn remove_file_returns_ok_for_empty_string() {
-        let result = remove_file(String::new());
-        assert!(
-            result.is_ok(),
-            "remove_file must handle empty path gracefully"
+    fn delete_path_returns_false_for_nonexistent_path() {
+        let result = delete_path(
+            "/definitely/does/not/exist/file.bin".to_string(),
+            FileDeletionMode::Permanent,
         );
+        assert!(!result.expect("missing path is a no-op"));
     }
 
     #[test]
-    fn remove_file_handles_path_with_spaces() {
-        let dir = std::env::temp_dir().join("motrix test remove spaces");
-        let _ = std::fs::create_dir_all(&dir);
-        let file = dir.join("my download.aria2");
-        std::fs::write(&file, "data").expect("write");
-
-        let result = remove_file(file.to_string_lossy().to_string());
-        assert!(result.is_ok());
-        assert!(!file.exists());
-
-        let _ = std::fs::remove_dir(&dir);
+    fn delete_path_returns_false_for_empty_path() {
+        let result = delete_path(String::new(), FileDeletionMode::Permanent);
+        assert!(!result.expect("empty path is a no-op"));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn remove_file_does_not_delete_directories() {
-        let dir = std::env::temp_dir().join("motrix_test_remove_dir_guard");
-        let _ = std::fs::create_dir_all(&dir);
-        assert!(dir.exists(), "precondition: dir must exist");
+    fn delete_path_removes_symlink_without_following_target() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let target = root.path().join("target");
+        let link = root.path().join("link");
+        std::fs::create_dir_all(&target).expect("create target");
+        std::fs::write(target.join("file.bin"), "data").expect("write target file");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
 
-        // std::fs::remove_file on a directory fails — verify it returns Err
-        let result = remove_file(dir.to_string_lossy().to_string());
-        assert!(result.is_err(), "remove_file must not delete directories");
-        assert!(
-            dir.exists(),
-            "directory must still exist after failed removal"
+        let result = delete_path(
+            link.to_string_lossy().to_string(),
+            FileDeletionMode::Permanent,
         );
-
-        let _ = std::fs::remove_dir(&dir);
+        assert!(result.expect("delete symlink"));
+        assert!(!link.exists(), "symlink must be deleted");
+        assert!(
+            target.join("file.bin").exists(),
+            "symlink target must remain"
+        );
     }
 }

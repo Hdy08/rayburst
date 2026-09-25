@@ -1,19 +1,11 @@
-/**
- * @fileoverview Pure functions for the General preference tab.
- *
- * Manages app-shell configuration: language, appearance, auto-update,
- * startup behavior, and tray/dock settings. None of these config keys
- * are sent to the aria2 engine — buildGeneralSystemConfig returns {}.
- */
 import type { AppConfig } from '@shared/types'
-import { DEFAULT_APP_CONFIG as D } from '@shared/constants'
 
 // ── Types ───────────────────────────────────────────────────────────
 
 export interface GeneralForm {
   [key: string]: unknown
-  locale: string
-  theme: string
+  locale: AppConfig['locale']
+  theme: AppConfig['theme']
   colorScheme: string
   customColorScheme: string
   taskCardMode: AppConfig['taskCardMode']
@@ -25,10 +17,12 @@ export interface GeneralForm {
   taskPaginationOpacity: number
   speedLimitButtonVisible: boolean
   speedLimitButtonOpacity: number
+  showLogoWhenEmpty: boolean
+  reduceMotion: boolean
   sidebarTaskCounts: boolean
   autoCheckUpdate: boolean
   autoCheckUpdateInterval: number
-  updateChannel: string
+  updateChannel: AppConfig['updateChannel']
   showProgressBar: boolean
   dockBadgeSpeed: boolean
   openAtLogin: boolean
@@ -45,55 +39,37 @@ export interface GeneralForm {
 
 /**
  * Builds the general form state from the preference store config.
- * All fallback values reference DEFAULT_APP_CONFIG (single source of truth).
  */
 export function buildGeneralForm(config: AppConfig): GeneralForm {
   return {
-    locale: config.locale || 'auto',
-    theme: config.theme ?? D.theme,
-    colorScheme: config.colorScheme ?? D.colorScheme,
-    customColorScheme: config.customColorScheme ?? D.customColorScheme,
-    taskCardMode: config.taskCardMode ?? D.taskCardMode,
-    taskCardOpacity: config.taskCardOpacity ?? D.taskCardOpacity,
-    taskListSelectedBackgroundOpacity: config.taskListSelectedBackgroundOpacity ?? D.taskListSelectedBackgroundOpacity,
-    taskListWatermark: config.taskListWatermark ?? D.taskListWatermark,
-    backgroundImagePath: config.backgroundImagePath ?? D.backgroundImagePath,
-    backgroundOpacity: config.backgroundOpacity ?? D.backgroundOpacity,
-    taskPaginationOpacity: config.taskPaginationOpacity ?? D.taskPaginationOpacity,
-    speedLimitButtonVisible: config.speedLimitButtonVisible ?? D.speedLimitButtonVisible,
-    speedLimitButtonOpacity: config.speedLimitButtonOpacity ?? D.speedLimitButtonOpacity,
-    sidebarTaskCounts: config.sidebarTaskCounts ?? D.sidebarTaskCounts,
-    autoCheckUpdate: config.autoCheckUpdate ?? D.autoCheckUpdate,
-    autoCheckUpdateInterval: config.autoCheckUpdateInterval ?? D.autoCheckUpdateInterval,
-    updateChannel: config.updateChannel ?? D.updateChannel,
-    showProgressBar: config.showProgressBar ?? D.showProgressBar,
-    dockBadgeSpeed: config.dockBadgeSpeed ?? D.dockBadgeSpeed,
-    openAtLogin: config.openAtLogin ?? D.openAtLogin,
-    autoHideWindow: config.autoHideWindow ?? D.autoHideWindow,
-    keepWindowState: config.keepWindowState ?? D.keepWindowState,
-    resumeAllWhenAppLaunched: config.resumeAllWhenAppLaunched ?? D.resumeAllWhenAppLaunched,
-    minimizeToTrayOnClose: config.minimizeToTrayOnClose ?? D.minimizeToTrayOnClose,
-    hideDockOnMinimize: config.hideDockOnMinimize ?? D.hideDockOnMinimize,
-    traySpeedometer: config.traySpeedometer ?? D.traySpeedometer,
-    lightweightMode: config.lightweightMode ?? D.lightweightMode,
+    locale: config.locale,
+    theme: config.theme,
+    colorScheme: config.colorScheme,
+    customColorScheme: config.customColorScheme,
+    taskCardMode: config.taskCardMode,
+    taskCardOpacity: config.taskCardOpacity,
+    taskListSelectedBackgroundOpacity: config.taskListSelectedBackgroundOpacity,
+    taskListWatermark: config.taskListWatermark,
+    backgroundImagePath: config.backgroundImagePath,
+    backgroundOpacity: config.backgroundOpacity,
+    taskPaginationOpacity: config.taskPaginationOpacity,
+    speedLimitButtonVisible: config.speedLimitButtonVisible,
+    speedLimitButtonOpacity: config.speedLimitButtonOpacity,
+    showLogoWhenEmpty: config.showLogoWhenEmpty,
+    reduceMotion: config.reduceMotion,
+    sidebarTaskCounts: config.sidebarTaskCounts,
+    autoCheckUpdate: config.autoCheckUpdate,
+    autoCheckUpdateInterval: config.autoCheckUpdateInterval,
+    updateChannel: config.updateChannel,
+    showProgressBar: config.showProgressBar,
+    dockBadgeSpeed: config.dockBadgeSpeed,
+    openAtLogin: config.openAtLogin,
+    autoHideWindow: config.autoHideWindow,
+    keepWindowState: config.keepWindowState,
+    resumeAllWhenAppLaunched: config.resumeAllWhenAppLaunched,
+    minimizeToTrayOnClose: config.minimizeToTrayOnClose,
+    hideDockOnMinimize: config.hideDockOnMinimize,
+    traySpeedometer: config.traySpeedometer,
+    lightweightMode: config.lightweightMode,
   }
-}
-
-/**
- * General tab has NO aria2 engine keys — all config stays in the app store.
- * Returns an empty object so usePreferenceForm skips the save_system_config call.
- */
-export function buildGeneralSystemConfig(_f: GeneralForm): Record<string, string> {
-  return {}
-}
-
-/**
- * Transforms the general form for store persistence.
- * Pure passthrough — no field expansion or collapsing needed.
- */
-export function transformGeneralForStore(f: GeneralForm): Partial<AppConfig> {
-  return {
-    ...f,
-    theme: f.theme as AppConfig['theme'],
-  } as Partial<AppConfig>
 }

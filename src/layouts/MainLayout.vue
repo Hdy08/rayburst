@@ -1,51 +1,45 @@
 <script setup lang="ts">
-/** @fileoverview Main application layout with sidebar, subnav, and IPC event handling. */
+/** @fileoverview Main application layout with application shell and IPC event handling. */
 import { computed, ref, nextTick, watch } from 'vue'
+import { useIntervalFn, useMediaQuery } from '@vueuse/core'
+import { TASK_REFRESH_INTERVAL } from '@shared/timing'
 import { useRoute } from 'vue-router'
 import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { useEngineStore } from '@/stores/engine'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import { logger } from '@shared/logger'
-import {
-  buildHistoryRecord,
-  buildSharingCompletionRecord,
-  historyRecordToTask,
-  isMetadataTask,
-  updateHistoryFilePath,
-} from '@/composables/useTaskLifecycle'
-import { setArchivedPath, resolveTaskFilePath, requestFileRecheck } from '@/composables/useArchivedPaths'
-import { handleTaskComplete, handleSharingComplete, handleTaskError } from '@/composables/useTaskNotifyHandlers'
+import { historyRecordToTask, isMetadataTask } from '@/composables/useTaskLifecycle'
+import { resolveTaskFilePath, requestFileRecheck } from '@/composables/useTaskPaths'
+import { handleTaskComplete, handleP2pDownloadComplete, handleTaskError } from '@/composables/useTaskNotifyHandlers'
 import { shouldDeleteTorrent, trashTorrentFile } from '@/composables/useDownloadCleanup'
-import { cleanupAria2ControlFiles } from '@/composables/useFileDelete'
-import { getTaskDisplayName, resolveOpenTarget, checkTaskIsSharing, getTaskSharingKind } from '@shared/utils'
+import { getTaskName, resolveOpenTarget, checkTaskIsSharing, getTaskSharingKind } from '@shared/utils'
 import type { TaskSharingKind } from '@shared/utils/task'
 import type { Aria2Task } from '@shared/types'
 import { ARIA2_ERROR_CODES } from '@shared/aria2ErrorCodes'
-import { DEFAULT_APP_CONFIG, TASK_STATUS } from '@shared/constants'
+import { DEFAULT_APP_CONFIG } from '@shared/constants'
 import { useHistoryStore } from '@/stores/history'
-import { buildSelectFileOption, getPendingMagnetSelectionGids } from '@/composables/useMagnetFlow'
-import type { MagnetFileItem, MagnetSelectionSubmission } from '@/composables/useMagnetFlow'
-import {
-  createMagnetMetadataResolver,
-  listenForAria2DownloadComplete,
-  type MagnetMetadataState,
-} from '@/composables/useMagnetMetadataEvents'
+import { useDatabaseStore } from '@/stores/database'
+import { useDatabaseReset } from '@/composables/useDatabaseReset'
+import { useBtSelection } from '@/composables/useBtSelection'
 import aria2Api from '@/api/aria2'
 import { usePlatform } from '@/composables/usePlatform'
 import { throttledResizeHandler, cancelPendingResize } from '@/layouts/resizeThrottle'
-import AsideBar from '@/components/layout/AsideBar.vue'
-import TaskSubnav from '@/components/layout/TaskSubnav.vue'
-import PreferenceSubnav from '@/components/layout/PreferenceSubnav.vue'
+import AppSidebar from '@/components/layout/AppSidebar.vue'
+import PreferenceActionBar from '@/components/preference/PreferenceActionBar.vue'
+import { providePreferenceActions } from '@/composables/usePreferenceActions'
+import TaskActions from '@/components/task/TaskActions.vue'
+import { useTaskDestinations } from '@/components/layout/navigation'
 import Speedometer from '@/components/layout/Speedometer.vue'
-import WindowControls from '@/components/layout/WindowControls.vue'
-import EngineOverlay from '@/components/layout/EngineOverlay.vue'
 import TaskBackgroundLayer from '@/components/layout/TaskBackgroundLayer.vue'
+import WindowControls from '@/components/layout/WindowControls.vue'
+import EngineRecoveryDialog from '@/components/layout/EngineRecoveryDialog.vue'
 import AboutPanel from '@/components/about/AboutPanel.vue'
 import AddTask from '@/components/task/AddTask.vue'
 import UpdateDialog from '@/components/preference/UpdateDialog.vue'
-import MagnetFileSelect from '@/components/task/MagnetFileSelect.vue'
+import TaskSelectionHost from '@/components/task/TaskSelectionHost.vue'
 import { useTaskStore } from '@/stores/task'
 import { usePreferenceStore } from '@/stores/preference'
 import { useAppMessage } from '@/composables/useAppMessage'
@@ -55,72 +49,72 @@ import { NModal, NButton, NCheckbox, NProgress, NPagination, useDialog } from 'n
 
 import { useAppEvents } from '@/composables/useAppEvents'
 import { loadAddedAtFromRecords } from '@/composables/useTaskOrder'
-import { resolveArchiveAction } from '@shared/utils/autoArchive'
-
-interface MagnetSelectionSession {
-  metadataGid: string
-  downloadGid: string
-}
 
 const { t } = useI18n()
 const route = useRoute()
 const appStore = useAppStore()
+const engineStore = useEngineStore()
 const taskStore = useTaskStore()
+useIntervalFn(() => {
+  if (engineStore.isReady) void taskStore.fetchList(false)
+}, TASK_REFRESH_INTERVAL)
+const btSelection = useBtSelection()
 const preferenceStore = usePreferenceStore()
 const navDialog = useDialog()
 const message = useAppMessage()
-
+const database = useDatabaseStore()
+const { showDatabaseReset } = useDatabaseReset()
+watch(
+  () => database.phase,
+  (phase) => {
+    if (phase === 'failed' && !database.notified) {
+      database.notified = true
+      showDatabaseReset(true)
+    }
+  },
+  { immediate: true, flush: 'post' },
+)
 const isTaskPage = computed(() => route.path.startsWith('/task'))
-const isPreferencePage = computed(() => route.path.startsWith('/preference'))
 const taskBackground = useTaskBackgroundConfig()
 const showTaskBackgroundUnderlay = computed(() => isTaskPage.value && taskBackground.isTaskBackgroundConfigured.value)
+const preferenceActions = providePreferenceActions()
+const activePreferenceActions = computed(() =>
+  preferenceActions.value?.routeName === route.name ? preferenceActions.value : null,
+)
+const taskScope = computed(() => {
+  const status = route.params.status
+  return status === 'progress' || status === 'failed' || status === 'completed' ? status : 'all'
+})
+
+const compactNavigation = useMediaQuery('(max-width: 699px)')
+const taskDestinations = useTaskDestinations()
+const pageTitle = computed(() =>
+  isTaskPage.value
+    ? (taskDestinations.value.find((item) => item.key === (route.params.status || 'all'))?.label ?? t('task.scope-all'))
+    : t('navigation.settings'),
+)
 const showAbout = ref(false)
+function openAbout() {
+  showAbout.value = true
+}
 const showExitDialog = ref(false)
 const isExiting = ref(false)
 const rememberChoice = ref(false)
 const pendingTrayHide = ref(false)
 const isMaximized = ref(false)
 const { platform: currentPlatform, isMac, isWindows } = usePlatform()
-const showEngineOverlay = ref(false)
-const taskPaginationTab = computed(() =>
-  taskStore.currentList === 'stopped' ? 'stopped' : taskStore.currentList === 'all' ? 'all' : 'active',
-)
+const taskPaginationTab = computed(() => taskStore.currentList)
 const taskPaginationPage = computed(() => taskStore.taskPagination[taskPaginationTab.value].page)
 const taskPaginationPageSize = computed(() => taskStore.taskPagination.pageSize)
 const taskPaginationPageCount = computed(() => taskStore.currentTaskPageCount())
 const taskPaginationPageSizes = [5, 20, 40, 80, 100]
-const showTaskPaginationControl = ref(isTaskPage.value)
-const showSpeedLimitButton = computed(() => !!preferenceStore.config.speedLimitButtonVisible)
+const showSpeedLimitButton = computed(() => preferenceStore.config.speedLimitButtonVisible)
 const taskPaginationControlStyle = computed(() => ({
   '--task-pagination-control-opacity-percent': opacityPercentToCssPercent(
     preferenceStore.config.taskPaginationOpacity,
     DEFAULT_APP_CONFIG.taskPaginationOpacity,
   ),
 }))
-
-watch(
-  () => route.path,
-  (path, oldPath) => {
-    const nextIsTaskPage = path.startsWith('/task')
-    const previousIsTaskPage = oldPath?.startsWith('/task') ?? nextIsTaskPage
-    if (!nextIsTaskPage) {
-      showTaskPaginationControl.value = false
-      return
-    }
-    if (previousIsTaskPage) {
-      showTaskPaginationControl.value = true
-    } else {
-      showTaskPaginationControl.value = false
-    }
-  },
-)
-
-function handleMainContentBeforeEnter() {
-  if (isTaskPage.value) {
-    showTaskPaginationControl.value = true
-  }
-}
-
 // ── Auto-shutdown countdown state ──────────────────────────────────
 const showShutdownCountdown = ref(false)
 const shutdownCountdown = ref(60)
@@ -139,8 +133,7 @@ let unlistenResize: (() => void) | null = null
 let unlistenExitDialog: (() => void) | null = null
 let unlistenStat: (() => void) | null = null
 let unlistenTaskMonitor: Array<() => void> = []
-let unlistenAria2DownloadComplete: (() => void) | null = null
-let stopPendingMagnetWatch: (() => void) | null = null
+let unlistenAria2DownloadPause: (() => void) | null = null
 let unlistenFocusRecheck: (() => void) | null = null
 let unlistenAppToast: (() => void) | null = null
 
@@ -192,7 +185,7 @@ async function showInFolderFromNotification(task: Aria2Task) {
   try {
     const fileExists = await invoke<boolean>('check_path_exists', { path: filePath })
     if (fileExists) {
-      await invoke('show_item_in_dir', { path: filePath })
+      await invoke('show_notification_item_in_dir', { path: filePath })
       message.success(t('task.open-folder-success'))
       return
     }
@@ -201,7 +194,7 @@ async function showInFolderFromNotification(task: Aria2Task) {
     if (fallback) {
       const fallbackExists = await invoke<boolean>('check_path_exists', { path: fallback })
       if (fallbackExists) {
-        await invoke('show_item_in_dir', { path: fallback })
+        await invoke('show_notification_item_in_dir', { path: fallback })
         message.success(t('task.open-folder-success'))
         return
       }
@@ -215,13 +208,13 @@ async function showInFolderFromNotification(task: Aria2Task) {
   }
 }
 
-// ── Magnet file selection state (app-level) ─────────────────────────
-const magnetSelectVisible = ref(false)
-const magnetSelectFiles = ref<MagnetFileItem[]>([])
-const magnetSelectionSession = ref<MagnetSelectionSession | null>(null)
-const magnetSelectName = ref('')
-const magnetSelectSubmission = ref<MagnetSelectionSubmission>(null)
-const magnetSelectClosing = ref(false)
+const addTaskClosing = ref(false)
+watch(
+  () => appStore.addTaskVisible,
+  (visible, previous) => {
+    if (!visible && previous) addTaskClosing.value = true
+  },
+)
 
 const { setupListeners } = useAppEvents({
   t,
@@ -230,8 +223,6 @@ const { setupListeners } = useAppEvents({
   preferenceStore,
   message,
   navDialog,
-  showEngineOverlay,
-  isExiting,
   handleExitConfirm,
   onNotificationTaskAction: handleNotificationTaskAction,
   onAbout: () => {
@@ -291,46 +282,6 @@ function stopAppToastListener() {
   unlistenAppToast = null
 }
 
-// ── Config migration toast ──────────────────────────────────────────
-watch(
-  () => preferenceStore.migrationResult,
-  (result) => {
-    if (!result?.migrated) return
-    const v = `v${result.targetVersion}`
-    if (result.errors.length === 0) {
-      message.success(t('app.migration-success', { version: v }))
-    } else {
-      message.warning(t('app.migration-incomplete', { version: v }))
-    }
-    preferenceStore.migrationResult = null
-  },
-  { immediate: true },
-)
-
-// ── DB schema migration toast ───────────────────────────────────────
-// Uses the same reactive pattern as config migration toast above.
-// loadPreference() sets dbUpgradeVersion only for saved preferences.
-// Fresh installs use CURRENT_DB_SCHEMA_VERSION from DEFAULT_APP_CONFIG,
-// so their first persisted config does not trigger a false upgrade toast.
-watch(
-  () => preferenceStore.dbUpgradeVersion,
-  async (savedDbVersion) => {
-    if (savedDbVersion === null) return
-    try {
-      const historyStore = useHistoryStore()
-      const currentDbVersion = await historyStore.getSchemaVersion()
-      if (savedDbVersion < currentDbVersion) {
-        message.info(t('app.db-upgraded', { version: `v${currentDbVersion}` }))
-        await preferenceStore.updateAndSave({ dbSchemaVersion: currentDbVersion })
-      }
-    } catch (e) {
-      logger.debug('DbMigration.toast', e)
-    }
-    preferenceStore.dbUpgradeVersion = null
-  },
-  { immediate: true },
-)
-
 // ── Stat listener — passive subscription to Rust stat_service events ──
 // Replaces the old frontend polling loop. Rust is the sole poller of aria2;
 // the frontend simply listens for `stat:update` and updates reactive state.
@@ -345,127 +296,31 @@ function stopStatListener() {
   unlistenStat = null
 }
 
-// ── Magnet metadata monitoring (app-level) ──────────────────────────
-
-const magnetMetadataResolver = createMagnetMetadataResolver(magnetMetadataDeps)
-
-async function startAria2DownloadCompleteListener() {
-  stopAria2DownloadCompleteListener()
-  unlistenAria2DownloadComplete = await listenForAria2DownloadComplete((gid) => magnetMetadataResolver.request(gid))
+// Native pause events refresh the same snapshot used by the selection queue.
+async function startAria2DownloadPauseListener() {
+  stopAria2DownloadPauseListener()
+  unlistenAria2DownloadPause = await listen<{ gid: string }>('aria2-event:download-pause', async ({ payload }) => {
+    try {
+      await btSelection.classifyPending(payload.gid)
+    } catch (error) {
+      logger.error('BtSelection.classify', error)
+      message.error(t('task.magnet-select-fail'))
+    }
+    await taskStore.fetchList()
+  })
+}
+function stopAria2DownloadPauseListener() {
+  unlistenAria2DownloadPause?.()
+  unlistenAria2DownloadPause = null
 }
 
-function stopAria2DownloadCompleteListener() {
-  unlistenAria2DownloadComplete?.()
-  unlistenAria2DownloadComplete = null
-}
-
-function magnetMetadataDeps() {
-  const state: MagnetMetadataState = {
-    get pendingGids() {
-      return appStore.pendingMagnetGids
-    },
-    set pendingGids(value) {
-      appStore.pendingMagnetGids = value
-    },
-    get visible() {
-      return magnetSelectVisible.value
-    },
-    set visible(value) {
-      magnetSelectVisible.value = value
-    },
-    get files() {
-      return magnetSelectFiles.value
-    },
-    set files(value) {
-      magnetSelectFiles.value = value
-    },
-    get session() {
-      return magnetSelectionSession.value
-    },
-    set session(value) {
-      magnetSelectionSession.value = value
-    },
-    get name() {
-      return magnetSelectName.value
-    },
-    set name(value) {
-      magnetSelectName.value = value
-    },
-  }
-  return {
-    state,
-    fetchTaskStatus: taskStore.fetchTaskStatus,
-    fetchPendingTasks: () => aria2Api.fetchTaskList({ type: 'active' }),
-    getFiles: taskStore.getFiles,
-    fallbackName: () => t('task.magnet-task'),
-  }
-}
-
-async function restorePendingMagnetSelections() {
-  try {
-    const tasks = await aria2Api.fetchTaskList({ type: 'active' })
-    const gids = getPendingMagnetSelectionGids(tasks)
-    if (gids.length === 0) return
-
-    const known = new Set(appStore.pendingMagnetGids)
-    appStore.pendingMagnetGids = [...appStore.pendingMagnetGids, ...gids.filter((gid) => !known.has(gid))]
-  } catch (e) {
-    logger.debug('MainLayout.magnetRestore', e instanceof Error ? e.message : String(e))
-  }
-}
-
-async function handleMagnetConfirm(selectedIndices: number[]) {
-  if (magnetSelectSubmission.value !== null) return
-  const session = magnetSelectionSession.value
-  if (!session) return
-
-  magnetSelectSubmission.value = 'confirm'
-  try {
-    const selectFile = buildSelectFileOption(selectedIndices)
-    const task = await taskStore.fetchTaskStatus(session.downloadGid)
-    await taskStore.applyMagnetFileSelection(task, selectFile)
-    appStore.pendingMagnetGids = appStore.pendingMagnetGids.filter((gid) => gid !== session.metadataGid)
-    magnetSelectClosing.value = true
-    magnetSelectVisible.value = false
-    magnetSelectionSession.value = null
-    magnetSelectFiles.value = []
-    magnetSelectName.value = ''
-    message.success(t('task.magnet-files-selected') || 'Files selected, download starting')
-  } catch (e) {
-    logger.error('MainLayout.magnetConfirm', e)
-    message.error(t('task.magnet-select-fail') || 'Failed to configure download')
-  } finally {
-    magnetSelectSubmission.value = null
-  }
-}
-
-async function handleMagnetCancel() {
-  if (magnetSelectSubmission.value !== null) return
-  const session = magnetSelectionSession.value
-  if (!session) return
-
-  magnetSelectSubmission.value = 'cancel'
-  try {
-    await taskStore.cancelMagnetSelectionDownload(session)
-    appStore.pendingMagnetGids = appStore.pendingMagnetGids.filter((gid) => gid !== session.metadataGid)
-    magnetSelectClosing.value = true
-    magnetSelectVisible.value = false
-    magnetSelectionSession.value = null
-    magnetSelectFiles.value = []
-    magnetSelectName.value = ''
-    message.info(t('task.magnet-download-cancelled') || 'Download cancelled')
-  } catch (e) {
-    logger.error('MainLayout.magnetCancel', e)
-  } finally {
-    magnetSelectSubmission.value = null
-  }
-}
-
-function handleMagnetSelectAfterLeave() {
-  if (!magnetSelectClosing.value) return
-  magnetSelectClosing.value = false
-  if (appStore.pendingMagnetGids.length > 0) void magnetMetadataResolver.request()
-}
+watch(
+  () => engineStore.isReady,
+  (ready) => {
+    if (ready) void taskStore.fetchList()
+  },
+  { immediate: true },
+)
 
 /**
  * Handle the maximize-toggled event from WindowControls.
@@ -483,8 +338,17 @@ watch(
   () => appStore.pendingUpdate,
   (update) => {
     if (update) {
-      nextTick(() => updateDialogRef.value?.open())
+      nextTick(() => updateDialogRef.value?.present(update))
       appStore.pendingUpdate = null
+    }
+  },
+)
+
+watch(
+  () => appStore.updateCheckRequestId,
+  (requestId) => {
+    if (requestId > 0) {
+      nextTick(() => updateDialogRef.value?.open())
     }
   },
 )
@@ -500,21 +364,6 @@ async function handleExitConfirm() {
   showExitDialog.value = false
   rememberChoice.value = false
 
-  // ── Clear completed download records on exit (#134) ──────────
-  // Runs while the webview JS context is still fully functional.
-  // Only removes 'complete' status tasks; error and removed records
-  // are preserved for diagnostics.
-  if (preferenceStore.config.clearCompletedOnExit) {
-    try {
-      const completedTasks = taskStore.taskList.filter((t) => t.status === TASK_STATUS.COMPLETE)
-      for (const task of completedTasks) {
-        await taskStore.removeTaskRecord(task)
-      }
-    } catch (e: unknown) {
-      logger.warn('MainLayout.exitCleanup', e instanceof Error ? e.message : String(e))
-    }
-  }
-
   // Hide the window and let the OS play its native close animation
   // (DWM fade on Windows, AppKit transition on macOS, compositor
   // effect on Linux).  No custom CSS or alpha animation needed.
@@ -523,8 +372,6 @@ async function handleExitConfirm() {
 
   // exit(0) sends an IPC call to Rust — if we destroy() first,
   // the webview is gone and the IPC silently fails.
-  // Session cleanup (purge completed tasks + save) is handled by the
-  // Rust RunEvent::Exit handler — single entry point for all exit paths.
   const { exit } = await import('@tauri-apps/plugin-process')
   await exit(0)
 }
@@ -616,7 +463,7 @@ function skipShutdownOnce() {
 /**
  * Event-driven shutdown condition check.
  *
- * Called from lifecycle callbacks (onTaskComplete / onSharingComplete) instead
+ * Called from lifecycle callbacks instead
  * of a stat watcher. Queries aria2 directly for real-time task state,
  * bypassing the stale taskStore.taskList and the unreliable
  * appStore.stat.numActive (which counts seeders as active).
@@ -673,8 +520,7 @@ onMounted(async () => {
     // Read autoHideWindow directly from the same Tauri persistent store
     // used by the Rust setup() guard. This keeps the frontend safety net
     // aligned with the native cold-start decision, including WebView
-    // recreation in lightweight mode. Background notification buttons also
-    // keep a recreated WebView hidden while it performs the file action.
+    // recreation in lightweight mode.
     const { load } = await import('@tauri-apps/plugin-store')
     const tauriStore = await load('config.json')
     const prefs = await tauriStore.get<Record<string, unknown>>('preferences')
@@ -709,21 +555,16 @@ onMounted(async () => {
   }
 
   startStatListener()
-  await startAria2DownloadCompleteListener()
+  await startAria2DownloadPauseListener()
 
   // ── Auto-shutdown event from Rust monitor (lightweight mode fallback) ──
   unlistenPowerCountdown = await listen('power:countdown', () => {
     startShutdownCountdown()
   })
 
-  // ── Task lifecycle reactions (driven by Rust monitor events) ─────
-  // The Rust task monitor is the single poller of aria2. It detects
-  // completion / error / shared-upload transitions, writes history, and
-  // sends native OS notifications (working even in lightweight mode after
-  // the WebView is destroyed). The frontend subscribes to those events and
-  // owns the UI-side reactions: in-app toasts, auto-archive file moves,
-  // torrent cleanup, and the auto-shutdown check. Each handler re-fetches
-  // the full aria2 task so it sees the same shape a poll would have.
+  // ── Task lifecycle reactions (driven by native Aria2 Next events) ─
+  // Rust persists lifecycle records before emitting these UI events. The
+  // frontend owns in-app toasts, auto-archive moves, and torrent cleanup.
   const historyStore = useHistoryStore()
 
   // ── Pre-populate task birth timestamps from DB ──────────────────
@@ -750,12 +591,10 @@ onMounted(async () => {
 
   async function onTaskError(task: Aria2Task): Promise<void> {
     if (isMetadataTask(task)) return
-    const record = buildHistoryRecord(task)
-    historyStore.addRecord(record).catch((e) => logger.debug('Lifecycle.historyRecord.error', e))
+    taskStore.fetchList().catch((e) => logger.debug('Lifecycle.taskCounts.error', e))
     const i18nKey = task.errorCode ? ARIA2_ERROR_CODES[task.errorCode] : undefined
     const errorText = i18nKey ? t(i18nKey) : task.errorMessage || t('task.error-unknown')
     handleTaskError(task, errorText, {
-      messageSuccess: message.success,
       messageError: message.error,
       t,
     })
@@ -763,13 +602,7 @@ onMounted(async () => {
 
   async function onTaskComplete(task: Aria2Task): Promise<void> {
     if (isMetadataTask(task)) return
-    const record = buildHistoryRecord(task)
-    // BT tasks: clean up stale DB records from previous sessions where
-    // aria2 assigned a different GID to the same torrent (infoHash is stable).
-    if (task.infoHash) {
-      historyStore.removeByInfoHash(task.infoHash, task.gid).catch((e) => logger.debug('Lifecycle.cleanStale', e))
-    }
-    historyStore.addRecord(record).catch((e) => logger.debug('Lifecycle.historyRecord', e))
+    taskStore.fetchList().catch((e) => logger.debug('Lifecycle.taskCounts', e))
     handleTaskComplete(task, {
       messageSuccess: message.success,
       messageError: message.error,
@@ -778,65 +611,15 @@ onMounted(async () => {
       onShowInFolder: showInFolderFromNotification,
     })
 
-    // ── Auto-archive: move file to category directory if applicable ──
-    logger.debug(
-      'AutoArchive.input',
-      `gid=${task.gid} enabled=${preferenceStore.config.fileCategoryEnabled} ` +
-        `categories=${preferenceStore.config.fileCategories?.length ?? 0} ` +
-        `baseDir=${preferenceStore.config.dir}`,
-    )
-    const archiveAction = resolveArchiveAction(
-      task,
-      preferenceStore.config.fileCategoryEnabled,
-      preferenceStore.config.fileCategories,
-      preferenceStore.config.dir,
-    )
-    if (archiveAction) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const newPath = await invoke<string>('move_file', {
-          source: archiveAction.source,
-          targetDir: archiveAction.targetDir,
-        })
-        logger.info('AutoArchive.moved', `${archiveAction.source} → ${newPath}`)
-
-        // Persist the new path so all consumers resolve to the archived location.
-        // Runtime Map — effective immediately for this session.
-        setArchivedPath(task.gid, newPath)
-        // History DB — effective after app restart (meta.files path update).
-        updateHistoryFilePath(historyStore, task.gid, archiveAction.source, newPath).catch((e) =>
-          logger.debug('AutoArchive.historyUpdate', e),
-        )
-      } catch (e) {
-        // Archive failure is non-critical — file remains at download location
-        logger.warn('AutoArchive.failed', e instanceof Error ? e.message : String(e))
-      }
-    } else {
-      logger.debug('AutoArchive.result', `gid=${task.gid} action=none`)
-    }
-
-    // Clean up stale .aria2 control files when P2P sharing auto-stops.
-    if (task.bittorrent || task.ed2k) {
-      cleanupAria2ControlFiles(task).catch((e) => logger.debug('Lifecycle.aria2ControlCleanup', e))
-    }
-
     // ── Auto-shutdown: check after task completion ──
     checkShutdownCondition()
   }
 
-  async function onSharingComplete(task: Aria2Task, kind: TaskSharingKind): Promise<void> {
-    // Persist immediately — download is complete, sharing is just uploading.
-    // INSERT OR REPLACE: safe if onTaskComplete later writes the same GID.
+  async function onP2pDownloadComplete(task: Aria2Task, kind: TaskSharingKind): Promise<void> {
     if (!isMetadataTask(task)) {
-      if (kind === 'bt' && task.infoHash) {
-        historyStore
-          .removeByInfoHash(task.infoHash, task.gid)
-          .catch((e) => logger.debug('Lifecycle.sharingComplete.cleanStale', e))
-      }
-      const record = buildSharingCompletionRecord(task)
-      historyStore.addRecord(record).catch((e) => logger.debug('Lifecycle.sharingComplete.history', e))
+      taskStore.fetchList().catch((e) => logger.debug('Lifecycle.p2pDownloadComplete.taskCounts', e))
     }
-    handleSharingComplete(task, kind, {
+    handleP2pDownloadComplete(task, kind, {
       messageSuccess: message.success,
       messageError: message.error,
       t,
@@ -850,17 +633,20 @@ onMounted(async () => {
 
     if (kind !== 'bt') return
     if (!shouldDeleteTorrent(preferenceStore.config)) return
-    const sourcePath = task.infoHash ? taskStore.consumeTorrentSource(task.infoHash) : undefined
+    const sourcePath = taskStore.consumeTorrentSource(task.gid)
     if (sourcePath) {
       const ok = await trashTorrentFile(sourcePath)
       if (ok) {
-        const taskName = getTaskDisplayName(task)
+        const taskName = getTaskName(task)
         message.success(t('task.torrent-trashed', { taskName }))
       }
     }
   }
 
   unlistenTaskMonitor = [
+    await listen<{ gid: string }>('tasks:changed', () => {
+      void taskStore.fetchList()
+    }),
     await listen<{ gid: string }>('task-monitor:error', async ({ payload }) => {
       const task = await fetchTaskForEvent(payload.gid)
       if (task) await onTaskError(task)
@@ -870,12 +656,12 @@ onMounted(async () => {
       if (task) await onTaskComplete(task)
     }),
     await listen<{ gid: string; sharingKind?: TaskSharingKind }>(
-      'task-monitor:sharing-complete',
+      'task-monitor:p2p-download-complete',
       async ({ payload }) => {
         const task = await fetchTaskForEvent(payload.gid)
         if (!task) return
         const kind = payload.sharingKind ?? getTaskSharingKind(task)
-        if (kind) await onSharingComplete(task, kind)
+        if (kind) await onP2pDownloadComplete(task, kind)
       },
     ),
   ]
@@ -885,20 +671,11 @@ onMounted(async () => {
   // file, the focus event bumps recheckTrigger so visible TaskItems
   // re-run check_path_exists.  Zero polling overhead.
   unlistenFocusRecheck = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-    if (focused) requestFileRecheck()
+    if (focused) {
+      requestFileRecheck()
+      void taskStore.fetchList()
+    }
   })
-
-  // ── Magnet metadata recovery (app-level) ──────────────────────────
-  // WebSocket events handle the live path. This one-shot scan covers
-  // metadata that resolved before the listener was ready.
-  await restorePendingMagnetSelections()
-  stopPendingMagnetWatch = watch(
-    () => appStore.pendingMagnetGids,
-    (gids) => {
-      if (gids.length > 0 && !magnetSelectClosing.value) void magnetMetadataResolver.request()
-    },
-    { immediate: true },
-  )
 
   // Track maximize state for WindowControls icon toggle (maximize ↔ restore).
   // macOS: skipped — native traffic lights handle this; isMaximized() inside
@@ -991,10 +768,10 @@ onMounted(async () => {
         Copy: t('app.menu-copy'),
         Paste: t('app.menu-paste'),
         'Select All': t('app.menu-select-all'),
-        'Hide MotrixNext': t('app.hide'),
+        'Hide Rayburst': t('app.hide'),
         'Hide Others': t('app.hide-others'),
         'Show All': t('app.unhide'),
-        'Quit MotrixNext': t('app.quit'),
+        'Quit Rayburst': t('app.quit'),
       },
     })
   } catch (e) {
@@ -1004,9 +781,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopStatListener()
-  stopAria2DownloadCompleteListener()
-  stopPendingMagnetWatch?.()
-  stopPendingMagnetWatch = null
+  stopAria2DownloadPauseListener()
   unlistenTaskMonitor.forEach((fn) => fn())
   unlistenTaskMonitor = []
   if (unlistenFocusRecheck) unlistenFocusRecheck()
@@ -1026,29 +801,42 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div id="container" :class="{ 'native-frame': isMac, 'task-background-active': showTaskBackgroundUnderlay }">
+  <div id="container" :class="{ 'task-background-active': showTaskBackgroundUnderlay }">
     <!-- Minimal progress bar during engine initialization / restart -->
     <Transition name="engine-slide">
-      <div v-if="appStore.engineRestarting" class="engine-banner">
+      <div v-if="engineStore.isBusy" class="engine-banner">
         <div class="engine-progress" />
       </div>
     </Transition>
-    <AsideBar @show-about="showAbout = true" />
-    <TaskBackgroundLayer :show="isTaskPage" />
-    <div class="subnav-slot">
-      <Transition name="fade" mode="out-in">
-        <TaskSubnav v-if="isTaskPage" key="task-subnav" />
-        <PreferenceSubnav v-else-if="isPreferencePage" key="pref-subnav" />
-      </Transition>
+    <div class="window-chrome" data-tauri-drag-region />
+    <div class="sidebar-heading" data-tauri-drag-region>
+      <h2 data-tauri-drag-region>{{ t('app.task-list') }}</h2>
     </div>
-    <main class="content">
-      <div class="content-route">
-        <router-view v-slot="{ Component, route: viewRoute }">
-          <Transition name="fade" mode="out-in" appear @before-enter="handleMainContentBeforeEnter">
-            <component :is="Component" :key="viewRoute.path" />
-          </Transition>
-        </router-view>
+    <AppSidebar :compact="compactNavigation" class="sidebar-slot" @show-about="openAbout" />
+    <TaskBackgroundLayer
+      :show="isTaskPage"
+      :show-default-icon="!(preferenceStore.config.showLogoWhenEmpty && taskStore.isCurrentListEmpty)"
+    />
+    <header class="page-header" data-tauri-drag-region>
+      <div class="page-title-slot" data-tauri-drag-region>
+        <Transition name="page-title" mode="out-in">
+          <h1 :key="pageTitle" data-tauri-drag-region>{{ pageTitle }}</h1>
+        </Transition>
       </div>
+      <Transition name="bottom-accessory">
+        <TaskActions
+          v-if="isTaskPage"
+          :scope="taskScope"
+          :inert="taskStore.currentList !== (route.params.status || 'all')"
+        />
+      </Transition>
+    </header>
+    <main class="content">
+      <router-view v-slot="{ Component, route: viewRoute }">
+        <Transition name="fade" mode="out-in" appear>
+          <component :is="Component" :key="isTaskPage ? viewRoute.path : 'preferences'" />
+        </Transition>
+      </router-view>
     </main>
     <WindowControls
       class="window-controls"
@@ -1057,37 +845,57 @@ onUnmounted(() => {
       @close="showExitDialog = true"
       @maximize-toggled="onMaximizeToggled"
     />
-    <Speedometer v-if="showSpeedLimitButton" />
-    <Transition name="bottom-accessory">
-      <div v-if="showTaskPaginationControl" class="task-pagination-control" :style="taskPaginationControlStyle">
-        <NPagination
-          :page="taskPaginationPage"
-          :page-size="taskPaginationPageSize"
-          :page-count="taskPaginationPageCount"
-          :page-sizes="taskPaginationPageSizes"
-          size="small"
-          show-size-picker
-          @update:page="taskStore.setCurrentTaskPage"
-          @update:page-size="taskStore.setTaskPageSize"
-        />
-      </div>
-    </Transition>
+    <footer class="content-footer">
+      <Transition name="fade" mode="out-in" appear>
+        <div v-if="!isTaskPage" id="preference-actions" key="preferences" :inert="isTaskPage">
+          <PreferenceActionBar
+            :is-dirty="activePreferenceActions?.isDirty ?? false"
+            :is-valid="activePreferenceActions?.isValid ?? false"
+            @save="activePreferenceActions?.save()"
+            @discard="activePreferenceActions?.discard()"
+          />
+        </div>
+        <div
+          v-else
+          key="tasks"
+          class="task-pagination-control"
+          :style="taskPaginationControlStyle"
+          :inert="!isTaskPage"
+        >
+          <NPagination
+            :page="taskPaginationPage"
+            :page-size="taskPaginationPageSize"
+            :page-count="taskPaginationPageCount"
+            :page-sizes="taskPaginationPageSizes"
+            size="small"
+            :page-slot="compactNavigation ? 3 : 5"
+            :simple="compactNavigation"
+            :show-size-picker="!compactNavigation"
+            @update:page="taskStore.setCurrentTaskPage"
+            @update:page-size="taskStore.setTaskPageSize"
+          />
+        </div>
+      </Transition>
+      <Speedometer v-if="showSpeedLimitButton" />
+    </footer>
     <AboutPanel :show="showAbout" @close="showAbout = false" />
-    <AddTask :show="appStore.addTaskVisible" @close="appStore.hideAddTaskDialog()" />
-    <UpdateDialog ref="updateDialogRef" />
-    <EngineOverlay
-      :show="showEngineOverlay"
-      @recovered="showEngineOverlay = false"
-      @close="showEngineOverlay = false"
+    <AddTask
+      :show="appStore.addTaskVisible"
+      @close="appStore.hideAddTaskDialog()"
+      @after-leave="addTaskClosing = false"
     />
-    <MagnetFileSelect
-      :show="magnetSelectVisible"
-      :files="magnetSelectFiles"
-      :task-name="magnetSelectName"
-      :submission="magnetSelectSubmission"
-      @confirm="handleMagnetConfirm"
-      @cancel="handleMagnetCancel"
-      @after-leave="handleMagnetSelectAfterLeave"
+    <UpdateDialog ref="updateDialogRef" />
+    <EngineRecoveryDialog />
+    <TaskSelectionHost
+      :blocked="
+        appStore.addTaskVisible ||
+        addTaskClosing ||
+        taskStore.taskDetailVisible ||
+        taskStore.taskDetailClosing ||
+        showAbout ||
+        showExitDialog ||
+        engineStore.isBusy
+      "
     />
 
     <!-- Close action dialog: minimize-to-tray / quit / cancel -->
@@ -1153,53 +961,125 @@ onUnmounted(() => {
 
 <style scoped>
 #container {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: 32px 56px minmax(0, 1fr) auto;
+  transition: grid-template-columns var(--navigation-duration) var(--navigation-easing);
   height: 100vh;
   position: relative;
   overflow: hidden;
+  background: var(--main-bg);
 }
-.subnav-slot {
-  position: relative;
-  z-index: 1;
-  width: var(--subnav-width);
-  flex-shrink: 0;
-  background-color: var(--subnav-bg);
-  transition: width 0.25s cubic-bezier(0.2, 0, 0, 1);
+.window-chrome {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  background: linear-gradient(
+    to right,
+    var(--sidebar-bg) 0 var(--sidebar-width),
+    var(--main-bg) var(--sidebar-width) 100%
+  );
 }
-.content {
-  position: relative;
-  z-index: 1;
+.sidebar-heading {
+  grid-column: 1;
+  grid-row: 2;
+  padding-inline: 20px;
+  overflow: hidden;
+  background: var(--sidebar-bg);
+}
+.sidebar-heading,
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.sidebar-heading h2,
+.page-header h1 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+}
+.sidebar-heading h2 {
+  transition: opacity var(--navigation-duration) var(--navigation-easing);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-slot {
+  grid-column: 1;
+  grid-row: 3 / 5;
+  min-height: 0;
+}
+.page-header {
+  grid-column: 2;
+  grid-row: 2;
+  margin-inline: var(--content-gutter);
+  padding-bottom: 12px;
+  align-items: flex-end;
+  border-bottom: 2px solid var(--panel-border);
+}
+.page-title-slot {
   flex: 1;
   min-width: 0;
+}
+.page-header h1 {
+  min-width: 0;
   overflow: hidden;
-  background-color: var(--main-bg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.task-background-active .subnav-slot,
-.task-background-active .content,
-.task-background-active :deep(.aside),
-.task-background-active .subnav-slot :deep(.subnav) {
-  background-color: transparent;
+.page-header :deep(.task-actions) {
+  flex-shrink: 0;
 }
-.content-route {
-  position: relative;
-  z-index: 1;
-  height: 100%;
+.content {
+  grid-column: 2;
+  grid-row: 3;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+.task-background-active .content {
+  background: transparent;
+}
+.content-footer {
+  container: footer / inline-size;
+  min-height: 64px;
+  grid-column: 2;
+  grid-row: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px var(--content-gutter) 10px;
+}
+#preference-actions,
+.task-pagination-control {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+#preference-actions {
+  width: 100%;
+}
+.content-footer :deep(.speedometer) {
+  grid-column: 2;
+  grid-row: 1;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .window-controls {
   z-index: 100;
 }
 .task-pagination-control {
-  position: fixed;
-  left: calc(var(--aside-width) + var(--subnav-width) + 36px);
-  bottom: 16px;
-  z-index: 20;
-  min-height: 36px;
+  justify-self: start;
+  max-width: 100%;
+  overflow-x: auto;
+  min-width: 0;
   padding: 3px 6px;
-  display: flex;
-  align-items: center;
-  box-sizing: border-box;
   border: 1px solid
     color-mix(in srgb, var(--m3-outline-variant) var(--task-pagination-control-opacity-percent), transparent);
   border-radius: 12px;
@@ -1208,22 +1088,30 @@ onUnmounted(() => {
     var(--m3-surface-container) var(--task-pagination-control-opacity-percent),
     transparent
   );
-  max-width: calc(100vw - var(--aside-width) - var(--subnav-width) - 280px);
-  overflow: hidden;
 }
-.task-pagination-control :deep(.n-pagination-item),
-.task-pagination-control :deep(.n-pagination-item-ellipsis),
-.task-pagination-control :deep(.n-base-selection),
-.task-pagination-control :deep(.n-pagination-prefix),
-.task-pagination-control :deep(.n-pagination-suffix) {
-  opacity: 1;
+.page-title-enter-active,
+.page-title-leave-active {
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
 }
+.page-title-enter-from {
+  opacity: 0;
+  transform: translateY(3px);
+}
+.page-title-leave-to {
+  opacity: 0;
+  transform: translateY(-3px);
+}
+
 .bottom-accessory-enter-active {
+  transform-origin: left center;
   transition:
     opacity 0.18s cubic-bezier(0.2, 0, 0, 1),
     transform 0.18s cubic-bezier(0.2, 0, 0, 1);
 }
 .bottom-accessory-leave-active {
+  transform-origin: left center;
   pointer-events: none;
   transition:
     opacity 0.12s cubic-bezier(0.3, 0, 0.8, 0.15),
@@ -1279,23 +1167,21 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 799px) {
-  .subnav-slot {
-    width: var(--subnav-width-compact);
+@media (max-width: 699px) {
+  .sidebar-heading h2 {
+    opacity: 0;
+    pointer-events: none;
   }
-  .task-pagination-control {
-    left: calc(var(--aside-width) + var(--subnav-width-compact) + 36px);
-    max-width: calc(100vw - var(--aside-width) - var(--subnav-width-compact) - 280px);
+  .page-header {
+    gap: 8px;
   }
 }
-
-@media (max-width: 600px) {
-  .subnav-slot {
-    display: none;
-  }
-  .task-pagination-control {
-    left: calc(var(--aside-width) + 24px);
-    max-width: calc(100vw - var(--aside-width) - 268px);
+@media (prefers-reduced-motion: reduce) {
+  .bottom-accessory-enter-active,
+  .bottom-accessory-leave-active,
+  #container,
+  .sidebar-heading h2 {
+    transition-duration: 1ms;
   }
 }
 

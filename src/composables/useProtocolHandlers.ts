@@ -1,67 +1,85 @@
+/** @fileoverview Native association state and serialized user actions. */
 import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { logger } from '@shared/logger'
+import { getErrorMessage } from '@shared/utils/errorMessage'
 
-export type ProtocolKey = 'magnet' | 'ed2k' | 'thunder' | 'motrixnext'
-
-export type ProtocolStatus = Record<ProtocolKey, boolean>
-
-export const protocolKeys: ProtocolKey[] = ['magnet', 'ed2k', 'thunder', 'motrixnext']
-
-const defaultStatus: ProtocolStatus = {
-  magnet: false,
-  ed2k: false,
-  thunder: false,
-  motrixnext: false,
+export const protocolKeys = ['.torrent', 'magnet', 'ed2k', 'thunder', 'rayburst'] as const
+export type ProtocolKey = (typeof protocolKeys)[number]
+export interface AssociationStatus {
+  state: 'current' | 'other' | 'unassigned' | 'unavailable' | 'error'
+  handler: string | null
+  error: string | null
+  canChange: boolean
 }
+type ProtocolResult =
+  | { kind: 'success' | 'unchanged' | 'manual' | 'cancelled' | 'query-failed' | 'ignored' }
+  | { kind: 'failed'; reason: string }
 
 function errorReason(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (typeof error === 'object' && error !== null) return Object.values(error as Record<string, unknown>).join(': ')
-  return String(error)
+  if (typeof error === 'object' && error !== null && 'Protocol' in error) return String(error.Protocol)
+  return getErrorMessage(error)
 }
 
 export function useProtocolHandlers() {
-  const status = ref<ProtocolStatus>({ ...defaultStatus })
+  const status = ref<Partial<Record<ProtocolKey, AssociationStatus>>>({})
   const pending = ref<ProtocolKey | null>(null)
-  const lastError = ref<{ protocol: ProtocolKey; enabled: boolean; reason: string } | null>(null)
+  const refreshing = ref(false)
+  let refreshRequested = false
+  const busy = computed(() => refreshing.value || pending.value !== null)
 
-  async function readProtocol(protocol: ProtocolKey): Promise<boolean> {
-    return await invoke<boolean>('is_default_protocol_client', { protocol })
-  }
-
-  async function refreshProtocol(protocol: ProtocolKey): Promise<boolean> {
-    const enabled = await readProtocol(protocol)
-    status.value = { ...status.value, [protocol]: enabled }
-    return enabled
-  }
-
-  async function refreshAll(): Promise<void> {
-    const entries = await Promise.all(protocolKeys.map(async (protocol) => [protocol, await readProtocol(protocol)]))
-    status.value = Object.fromEntries(entries) as ProtocolStatus
-  }
-
-  async function setProtocolEnabled(protocol: ProtocolKey, enabled: boolean): Promise<void> {
-    pending.value = protocol
-    lastError.value = null
+  async function refreshProtocol(protocol: ProtocolKey): Promise<AssociationStatus> {
     try {
-      if (enabled) {
-        await invoke('set_default_protocol_client', { protocol })
-      } else {
-        await invoke('remove_as_default_protocol_client', { protocol })
-      }
+      const result = await invoke<AssociationStatus>('get_association_status', { protocol })
+      status.value[protocol] = result
+      return result
     } catch (error) {
-      lastError.value = { protocol, enabled, reason: errorReason(error) }
-    } finally {
-      await refreshProtocol(protocol)
-      pending.value = null
+      const reason = errorReason(error)
+      logger.warn('Protocol.refresh', 'association query failed', { protocol, reason })
+      const result: AssociationStatus = { state: 'error', handler: null, error: reason, canChange: true }
+      status.value[protocol] = result
+      return result
     }
   }
 
-  return {
-    status: computed(() => status.value),
-    pending: computed(() => pending.value),
-    lastError: computed(() => lastError.value),
-    refreshAll,
-    setProtocolEnabled,
+  async function refreshAll(): Promise<void> {
+    refreshRequested = true
+    if (busy.value) return
+    refreshing.value = true
+    try {
+      do {
+        refreshRequested = false
+        await Promise.all(protocolKeys.map(refreshProtocol))
+      } while (refreshRequested)
+    } finally {
+      refreshing.value = false
+    }
   }
+
+  async function setDefault(protocol: ProtocolKey): Promise<ProtocolResult> {
+    if (busy.value || status.value[protocol]?.canChange === false || status.value[protocol]?.state === 'current')
+      return { kind: 'ignored' }
+    pending.value = protocol
+    let failure: string | undefined
+    try {
+      try {
+        await invoke('set_default_protocol_client', { protocol })
+      } catch (error) {
+        failure = errorReason(error)
+        logger.debug('Protocol.change', 'operation returned an error', { protocol, reason: failure })
+      }
+      await refreshProtocol(protocol)
+    } finally {
+      pending.value = null
+      if (refreshRequested) await refreshAll()
+    }
+    const actual = status.value[protocol]
+    if (actual?.state === 'current') return { kind: 'success' }
+    if (failure === 'cancelled') return { kind: 'cancelled' }
+    if (failure === 'manual_change_required') return { kind: 'manual' }
+    if (failure !== undefined) return { kind: 'failed', reason: failure }
+    return { kind: actual?.state === 'error' ? 'query-failed' : 'unchanged' }
+  }
+
+  return { status: computed(() => status.value), pending: computed(() => pending.value), busy, refreshAll, setDefault }
 }

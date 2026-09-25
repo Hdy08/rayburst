@@ -3,7 +3,7 @@
  *
  * Key behaviors under test:
  * - isDirty tracks shallow and deep changes via isEqual snapshot comparison
- * - handleSave persists to store and invokes save_system_config IPC
+ * - handleSave persists to store and replaces the generated engine snapshot
  * - handleReset restores form to initial state and clears dirty flag
  * - beforeSave returning false aborts the save
  * - afterSave receives previous config snapshot
@@ -183,8 +183,7 @@ describe('usePreferenceForm', () => {
     await nextTick()
 
     handleReset()
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    expect(mockMessage.success).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(mockMessage.success).toHaveBeenCalledTimes(1))
     const [message, options] = mockMessage.success.mock.calls[0]
     expect(extractMessageText(message)).toBe('preferences.changes-restored')
     expect(options).toEqual(expect.objectContaining({ closable: true }))
@@ -192,7 +191,7 @@ describe('usePreferenceForm', () => {
     unmount()
   })
 
-  it('handleSave persists to store and calls save_system_config IPC', async () => {
+  it('handleSave persists to store and replaces the engine snapshot', async () => {
     const store = usePreferenceStore()
     store.updateAndSave = vi.fn().mockResolvedValue(true)
 
@@ -203,7 +202,7 @@ describe('usePreferenceForm', () => {
     await handleSave()
 
     expect(store.updateAndSave).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrentDownloads: 8 }))
-    expect(mockInvoke).toHaveBeenCalledWith('save_system_config', {
+    expect(mockInvoke).toHaveBeenCalledWith('replace_system_config', {
       config: expect.objectContaining({ 'max-concurrent-downloads': '8' }),
     })
     expect(isDirty.value).toBe(false)
@@ -267,6 +266,99 @@ describe('usePreferenceForm', () => {
     unmount()
   })
 
+  it('shows the specific and standard success messages', async () => {
+    const store = usePreferenceStore()
+    store.updateAndSave = vi.fn().mockResolvedValue(true)
+    const { result, unmount } = withSetup(() =>
+      usePreferenceForm(
+        makeOptions({
+          saveFeedback: {
+            success: 'Settings applied',
+            restored: 'Previous settings restored',
+            rollbackFailed: 'Rollback failed',
+          },
+        }),
+      ),
+    )
+
+    result.form.value.maxConcurrentDownloads = 8
+    await result.handleSave()
+    await vi.waitFor(() => {
+      const messages = mockMessage.success.mock.calls.map(([content]) => extractMessageText(content))
+      expect(messages).toContain('preferences.save-success-message')
+    })
+
+    const successMessages = mockMessage.success.mock.calls.map(([content]) => extractMessageText(content))
+    expect(successMessages).toContain('Settings applied')
+    expect(successMessages).toContain('preferences.save-success-message')
+
+    unmount()
+  })
+
+  it('restores every completed save stage when a post-save side effect fails', async () => {
+    const store = usePreferenceStore()
+    store.config.maxConcurrentDownloads = 6
+    store.updateAndSave = vi.fn().mockResolvedValue(true)
+    const afterSave = vi.fn().mockRejectedValue(new Error('mapping failed'))
+    const { result, unmount } = withSetup(() =>
+      usePreferenceForm(
+        makeOptions({
+          afterSave,
+          saveFeedback: {
+            success: 'Settings applied',
+            restored: 'Previous settings restored',
+            rollbackFailed: 'Rollback failed',
+          },
+        }),
+      ),
+    )
+
+    result.form.value.maxConcurrentDownloads = 8
+    await expect(result.handleSave()).rejects.toThrow('mapping failed')
+
+    expect(store.updateAndSave).toHaveBeenCalledTimes(2)
+    expect(mockInvoke).toHaveBeenCalledWith('replace_system_config', {
+      config: expect.objectContaining({ 'max-concurrent-downloads': '6' }),
+    })
+    expect(mockChangeGlobalOption).toHaveBeenLastCalledWith({ 'max-concurrent-downloads': '6' })
+    expect(result.form.value.maxConcurrentDownloads).toBe(6)
+    expect(result.isDirty.value).toBe(false)
+    expect(extractMessageText(mockMessage.error.mock.calls[mockMessage.error.mock.calls.length - 1]?.[0])).toBe(
+      'Previous settings restored',
+    )
+
+    unmount()
+  })
+
+  it('reports rollback failure without claiming the form was restored', async () => {
+    const store = usePreferenceStore()
+    store.updateAndSave = vi.fn().mockResolvedValue(true)
+    mockChangeGlobalOption.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('rollback failed'))
+    const { result, unmount } = withSetup(() =>
+      usePreferenceForm(
+        makeOptions({
+          afterSave: () => Promise.reject(new Error('apply failed')),
+          saveFeedback: {
+            success: 'Settings applied',
+            restored: 'Previous settings restored',
+            rollbackFailed: 'Rollback failed',
+          },
+        }),
+      ),
+    )
+
+    result.form.value.maxConcurrentDownloads = 8
+    await expect(result.handleSave()).rejects.toThrow('apply failed')
+
+    expect(result.form.value.maxConcurrentDownloads).toBe(8)
+    expect(result.isDirty.value).toBe(true)
+    expect(extractMessageText(mockMessage.error.mock.calls[mockMessage.error.mock.calls.length - 1]?.[0])).toBe(
+      'Rollback failed',
+    )
+
+    unmount()
+  })
+
   it('patchSnapshot updates only specified fields in the baseline', async () => {
     const { result, unmount } = withSetup(() => usePreferenceForm(makeOptions()))
     const { form, isDirty, patchSnapshot, resetSnapshot } = result
@@ -310,14 +402,35 @@ describe('usePreferenceForm', () => {
     mockIsEngineReady.mockReturnValue(true)
 
     const { result, unmount } = withSetup(() => usePreferenceForm(makeOptions()))
-    const { handleSave } = result
+    const { form, handleSave } = result
 
+    form.value.maxConcurrentDownloads = 8
     await handleSave()
 
-    // Should call changeGlobalOption with filtered keys (no restart-only keys)
-    expect(mockChangeGlobalOption).toHaveBeenCalledWith(
-      expect.objectContaining({ dir: '/downloads', 'max-concurrent-downloads': '6' }),
+    expect(mockChangeGlobalOption).toHaveBeenCalledWith({ 'max-concurrent-downloads': '8' })
+    expect(mockChangeGlobalOption.mock.invocationCallOrder[0]).toBeLessThan(
+      (store.updateAndSave as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
     )
+
+    unmount()
+  })
+
+  it('aborts persistence when the engine rejects a live option', async () => {
+    const store = usePreferenceStore()
+    store.updateAndSave = vi.fn().mockResolvedValue(true)
+    mockIsEngineReady.mockReturnValue(true)
+    mockChangeGlobalOption.mockRejectedValueOnce(new Error('bind failed'))
+
+    const { result, unmount } = withSetup(() => usePreferenceForm(makeOptions()))
+    result.form.value.maxConcurrentDownloads = 8
+
+    await expect(result.handleSave()).rejects.toThrow('bind failed')
+
+    expect(store.updateAndSave).not.toHaveBeenCalled()
+    expect(mockInvoke).not.toHaveBeenCalledWith('replace_system_config', expect.anything())
+    expect(mockChangeGlobalOption).toHaveBeenLastCalledWith({ 'max-concurrent-downloads': '6' })
+    expect(result.form.value.maxConcurrentDownloads).toBe(6)
+    expect(result.isDirty.value).toBe(false)
 
     unmount()
   })
@@ -328,8 +441,9 @@ describe('usePreferenceForm', () => {
     mockIsEngineReady.mockReturnValue(false)
 
     const { result, unmount } = withSetup(() => usePreferenceForm(makeOptions()))
-    const { handleSave } = result
+    const { form, handleSave } = result
 
+    form.value.maxConcurrentDownloads = 8
     await handleSave()
 
     expect(mockChangeGlobalOption).not.toHaveBeenCalled()

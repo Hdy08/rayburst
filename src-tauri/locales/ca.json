@@ -1,0 +1,19 @@
+{
+  "_version": 1,
+  "notification.bt-complete-body": "Compartint: %{task_name}",
+  "notification.bt-complete-title": "Descàrrega BT completada",
+  "notification.download-batch-start-body": "Descarregant: %{task_name} i %{count} tasques més",
+  "notification.download-complete-body": "Desat: %{task_name}",
+  "notification.download-complete-title": "Descàrrega completada",
+  "notification.download-failed-body": "%{task_name}: %{reason}",
+  "notification.download-failed-title": "Descàrrega fallida",
+  "notification.download-start-body": "Descarregant: %{task_name}",
+  "notification.download-start-title": "Descàrrega iniciada",
+  "notification.ed2k-complete-body": "Compartint: %{task_name}",
+  "notification.ed2k-complete-title": "Descàrrega ED2K completada",
+  "notification.error-unknown": "Unknown error",
+  "notification.selection-title": "Esperant la selecció de contingut",
+  "notification.selection-body": "%{task_name}",
+  "notification.open-file-action": "Obrir fitxer",
+  "notification.show-in-folder-action": "Mostra a la carpeta"
+}

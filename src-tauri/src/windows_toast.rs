@@ -21,8 +21,8 @@ use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 pub const LAUNCH_ARG: &str = "--notification-activation";
 const MAX_ACTIVATION_CHARS: usize = 32_768;
-const INSTALLED_APP_ID: &str = "com.motrix.next";
-const INSTALLED_CLSID: GUID = GUID::from_u128(0x70df5a6d_e5b6_49fe_a8bc_9c904c2d609e);
+const INSTALLED_APP_ID: &str = env!("DESKTOP_APP_ID");
+const INSTALLED_CLSID: GUID = GUID::from_u128(0x22fc9aa3_1a56_47ff_a6a5_62d3e230a135);
 
 #[derive(Clone)]
 pub struct Identity {
@@ -34,8 +34,8 @@ impl Identity {
     pub fn for_app() -> Self {
         if cfg!(debug_assertions) {
             Self {
-                app_id: "com.motrix.next.debug".into(),
-                clsid: GUID::from_u128(0x4338f6a4_0c92_4fef_94ad_73e23943b6a2),
+                app_id: format!("{INSTALLED_APP_ID}.debug"),
+                clsid: GUID::from_u128(0x4402830b_5f6f_4fb4_bbe6_153e52b95455),
             }
         } else {
             Self {
@@ -68,7 +68,7 @@ impl Identity {
             .map_err(registry_error)?;
         server.set_value("", &command).map_err(registry_error)?;
         let (app, _) = root.create_subkey(self.app_key()).map_err(registry_error)?;
-        app.set_value("DisplayName", &"Motrix Next")
+        app.set_value("DisplayName", &"Rayburst")
             .map_err(registry_error)?;
         app.set_value("CustomActivator", &self.clsid_string())
             .map_err(registry_error)?;
@@ -278,8 +278,8 @@ mod tests {
     #[test]
     fn quotes_executable_and_rejects_invalid_commands() {
         assert_eq!(
-            server_command(Path::new(r"C:\Program Files\MotrixNext\motrix-next.exe")).unwrap(),
-            r#""C:\Program Files\MotrixNext\motrix-next.exe" --notification-activation"#
+            server_command(Path::new(r"C:\Program Files\Rayburst\rayburst.exe")).unwrap(),
+            r#""C:\Program Files\Rayburst\rayburst.exe" --notification-activation"#
         );
         assert!(server_command(Path::new("relative.exe")).is_err());
         assert!(server_command(Path::new("C:\\bad\"path.exe")).is_err());
@@ -312,7 +312,7 @@ mod tests {
         assert!(callback
             .Activate(
                 &windows::core::w!("other"),
-                &windows::core::w!("motrixnext://activate"),
+                &windows::core::w!("rayburst://activate"),
                 std::ptr::null(),
                 0
             )
@@ -320,7 +320,7 @@ mod tests {
         assert!(callback
             .Activate(
                 &windows::core::w!("test"),
-                &windows::core::w!("motrixnext://activate"),
+                &windows::core::w!("rayburst://activate"),
                 std::ptr::null(),
                 1
             )
@@ -329,7 +329,7 @@ mod tests {
         assert!(callback
             .Activate(
                 &windows::core::w!("test"),
-                &windows::core::w!("motrixnext://activate"),
+                &windows::core::w!("rayburst://activate"),
                 std::ptr::null(),
                 0
             )

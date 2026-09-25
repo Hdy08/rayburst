@@ -1,93 +1,21 @@
-/**
- * @fileoverview Smart file classification engine — pure functions.
- *
- * Routes downloads to directories based on file extension matching.
- *
- * Two classification strategies:
- *   1. **Pre-Download (instant)**: Resolves `dir` BEFORE the aria2 RPC call
- *      using the URL's extension. aria2 writes directly to the target
- *      directory — zero post-download I/O.
- *   2. **Post-Download (auto-archive)**: For URLs without detectable extensions,
- *      the file downloads to the default directory. After completion,
- *      `resolveArchiveAction` in autoArchive.ts uses the real filename
- *      (from aria2's Content-Disposition resolution) to determine if the
- *      file should be moved.
- *
- * aria2 auto-creates non-existent directories via `util::mkdirs()`
- * (see AbstractDiskWriter.cc:251), so no pre-creation is needed.
- */
+/** Category editing and native directory resolution. */
+import { invoke } from '@tauri-apps/api/core'
 import type { FileCategory } from '@shared/types'
 
-const MAX_URL_CANDIDATE_LENGTH = 4096
 const MAX_URL_PATTERN_LENGTH = 512
-
 export interface CategoryMatchContext {
   urls?: readonly string[]
 }
-
+export interface CategoryFileCandidate {
+  path: string
+  urls?: readonly string[]
+}
 export interface CategoryUrlPatternValidationError {
   line: number
   reason: 'invalid-regex' | 'too-long'
 }
-
-/**
- * Extracts the lowercase file extension from a URL or bare filename.
- *
- * Handles:
- * - Standard HTTP/HTTPS/FTP URLs with path segments
- * - Query strings (`?token=...`) and fragments (`#page=3`)
- * - Percent-encoded filenames (`%E6%96%87%E4%BB%B6.pdf`)
- * - Bare filenames without protocol (`document.xlsx`)
- * - Double extensions (`archive.tar.gz` → `gz`)
- *
- * Returns empty string when no extension can be determined:
- * - Magnet URIs, data URIs, blob URIs
- * - URLs without a file path segment
- * - Dotfiles without extension (`.gitignore`)
- */
-export function extractExtension(urlOrFilename: string): string {
-  if (!urlOrFilename) return ''
-
-  // Skip non-HTTP protocols that don't carry file extensions
-  if (/^(magnet|data|blob):/i.test(urlOrFilename)) return ''
-
-  // Extract pathname — strip query string and fragment first
-  let pathname: string
-  try {
-    pathname = new URL(urlOrFilename).pathname
-  } catch {
-    // Not a valid URL — treat as bare filename or path
-    pathname = urlOrFilename.split('?')[0].split('#')[0]
-  }
-
-  // Get the last path segment
-  const segments = pathname.split('/').filter(Boolean)
-  const filename = segments.pop()
-  if (!filename) return ''
-
-  // Percent-decode the segment
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(filename)
-  } catch {
-    decoded = filename
-  }
-
-  // Extract extension: last dot that isn't the first character (skip dotfiles)
-  const dotIndex = decoded.lastIndexOf('.')
-  if (dotIndex <= 0) return ''
-
-  return decoded.substring(dotIndex + 1).toLowerCase()
-}
-
-/**
- * Matches a file extension against category rules.
- * Returns the first matching FileCategory, or undefined if none match.
- *
- * First-match wins: rule order defines priority.
- */
-function normalizeExtension(ext: string): string {
-  return ext.trim().toLowerCase().replace(/^\./, '')
+function normalizeExtension(value: string): string {
+  return value.trim().toLowerCase().replace(/^\./, '')
 }
 
 export function normalizeCategoryUrlPatterns(patterns: unknown): string[] {
@@ -142,108 +70,36 @@ export function normalizeFileCategory(category: FileCategory): FileCategory {
   }
 }
 
-function hasExtensionRules(category: FileCategory): boolean {
-  return category.extensions.length > 0
-}
-
-function hasUrlRules(category: FileCategory): boolean {
-  return normalizeCategoryUrlPatterns(category.urlPatterns).length > 0
-}
-
-function urlCandidates(context?: CategoryMatchContext): string[] {
-  const urls = context?.urls ?? []
-  const result: string[] = []
-  const seen = new Set<string>()
-
-  for (const value of urls) {
-    const url = value.trim()
-    if (!url || url.length > MAX_URL_CANDIDATE_LENGTH || seen.has(url)) continue
-    seen.add(url)
-    result.push(url)
-  }
-
-  return result
-}
-
-function wildcardMatches(pattern: string, url: string): boolean {
-  const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
-  return new RegExp(`^${source}$`, 'i').test(url)
-}
-
-function regexMatches(pattern: string, url: string): boolean {
-  try {
-    return new RegExp(pattern, 'i').test(url)
-  } catch {
-    return false
-  }
-}
-
-function matchesUrlRules(category: FileCategory, context?: CategoryMatchContext): boolean {
-  const patterns = normalizeCategoryUrlPatterns(category.urlPatterns)
-  if (patterns.length === 0) return true
-
-  const candidates = urlCandidates(context)
-  if (candidates.length === 0) return false
-  const mode = category.urlPatternMode === 'regex' ? 'regex' : 'wildcard'
-
-  return patterns.some((pattern) =>
-    candidates.some((url) => (mode === 'regex' ? regexMatches(pattern, url) : wildcardMatches(pattern, url))),
-  )
-}
-
-/**
- * Matches a file extension and optional URL context against category rules.
- * Empty URL rules preserve the legacy extension-only behavior.
- * When extension and URL rules are both configured, both must match.
- */
-export function resolveCategory(
-  ext: string,
+export async function resolveFileSetCategory(
+  files: readonly CategoryFileCandidate[],
   categories: FileCategory[],
+  baseDir: string,
   context?: CategoryMatchContext,
-): FileCategory | undefined {
-  const normalizedExt = normalizeExtension(ext)
-
-  return categories.find((raw) => {
-    const category = normalizeFileCategory(raw)
-    const extensionConfigured = hasExtensionRules(category)
-    const urlConfigured = hasUrlRules(category)
-    if (!extensionConfigured && !urlConfigured) return false
-    if (extensionConfigured && !category.extensions.includes(normalizedExt)) return false
-    return matchesUrlRules(category, context)
+): Promise<FileCategory | undefined> {
+  const category = await invoke<FileCategory | null>('resolve_file_category', {
+    candidates: files.map((file) => ({ path: file.path, urls: [...(file.urls ?? []), ...(context?.urls ?? [])] })),
+    categories,
+    baseDir,
   })
+  return category ?? undefined
 }
 
 export function resolveDownloadCategory(
-  url: string,
+  value: string,
   categories: FileCategory[],
+  baseDir: string,
   context?: CategoryMatchContext,
-): FileCategory | undefined {
-  const ext = extractExtension(url)
-  return resolveCategory(ext, categories, { urls: [url, ...(context?.urls ?? [])] })
+): Promise<FileCategory | undefined> {
+  return resolveFileSetCategory([{ path: value }], categories, baseDir, context)
 }
 
-/**
- * Resolves the effective download directory for a URI.
- *
- * When classification is enabled and the URI's extension matches a rule,
- * returns the category's absolute directory path.
- * Otherwise returns baseDir unchanged.
- *
- * @param url        - Download URI or filename
- * @param baseDir    - User's configured default download directory
- * @param enabled    - Whether file classification is enabled
- * @param categories - Classification rules with absolute directory paths
- * @returns Resolved absolute directory path
- */
-export function resolveDownloadDir(
-  url: string,
+export async function resolveDownloadDir(
+  value: string,
   baseDir: string,
   enabled: boolean,
   categories: FileCategory[],
   context?: CategoryMatchContext,
-): string {
+): Promise<string> {
   if (!enabled) return baseDir
-
-  const cat = resolveDownloadCategory(url, categories, context)
-  return cat?.directory || baseDir
+  return (await resolveDownloadCategory(value, categories, baseDir, context))?.directory ?? baseDir
 }

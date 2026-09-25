@@ -1,10 +1,9 @@
 use std::sync::Mutex;
-use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(any(target_os = "windows", test))]
-const MOTRIX_SCHEME: &str = "motrixnext";
+const RAYBURST_SCHEME: &str = "rayburst";
 #[cfg(any(target_os = "windows", test))]
 const NOTIFICATION_OPEN_FOLDER_ACTION: &str = "open-folder";
 #[cfg(any(target_os = "windows", test))]
@@ -160,7 +159,7 @@ fn notification_open_target_from_url(
     secret: &str,
 ) -> Option<crate::services::notification::TaskNotificationOpenTarget> {
     let parsed = url::Url::parse(value).ok()?;
-    if parsed.scheme() != MOTRIX_SCHEME {
+    if parsed.scheme() != RAYBURST_SCHEME {
         return None;
     }
 
@@ -233,7 +232,7 @@ fn notification_task_action_from_url(
     value: &str,
 ) -> Option<(crate::services::frontend_action::FrontendActionKind, String)> {
     let parsed = url::Url::parse(value).ok()?;
-    if parsed.scheme() != MOTRIX_SCHEME
+    if parsed.scheme() != RAYBURST_SCHEME
         || parsed.fragment().is_some()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
@@ -312,7 +311,7 @@ fn notification_task_action_from_url(
 fn is_notification_task_action_url(value: &str) -> bool {
     url::Url::parse(value)
         .map(|parsed| {
-            if parsed.scheme() != MOTRIX_SCHEME {
+            if parsed.scheme() != RAYBURST_SCHEME {
                 return false;
             }
             if parsed.host_str() == Some(NOTIFICATION_TASK_ACTION_ROUTE) {
@@ -337,7 +336,7 @@ fn url_has_no_query_or_fragment(value: &str) -> bool {
 #[cfg(any(target_os = "windows", test))]
 fn motrix_action_from_url(value: &str) -> Option<String> {
     let parsed = url::Url::parse(value).ok()?;
-    if parsed.scheme() != MOTRIX_SCHEME {
+    if parsed.scheme() != RAYBURST_SCHEME {
         return None;
     }
 
@@ -418,7 +417,7 @@ fn route_external_inputs_with_intent(
 
     let frontend_ready = is_frontend_ready(app);
     if window_was_alive && frontend_ready {
-        wake_main_window(app, source, silent);
+        crate::tray::request_main_window(app, source, !silent);
         let payload = PendingDeepLinksPayload {
             urls: urls.clone(),
             silent,
@@ -432,7 +431,7 @@ fn route_external_inputs_with_intent(
     }
 
     queue_pending_deep_links(app, &urls, source, silent);
-    schedule_main_window_wake(app, source, silent);
+    crate::tray::request_main_window(app, source, !silent);
 }
 
 fn queue_pending_deep_links(app: &AppHandle, urls: &[String], source: &'static str, silent: bool) {
@@ -489,33 +488,6 @@ fn is_frontend_ready(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn schedule_main_window_wake(app: &AppHandle, source: &'static str, silent: bool) {
-    let app_for_task = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let app_for_main = app_for_task.clone();
-        if let Err(e) = app_for_task.run_on_main_thread(move || {
-            wake_main_window(&app_for_main, source, silent);
-        }) {
-            log::error!("deep_link:wake-schedule-failed source={source} error={e}");
-        }
-    });
-}
-
-fn wake_main_window(app: &AppHandle, source: &'static str, silent: bool) {
-    log::debug!("deep_link:wake-start source={source} silent={silent}");
-    let outcome = if silent {
-        crate::tray::ensure_main_window(app, source)
-    } else {
-        crate::tray::activate_main_window(app, source)
-    };
-    if outcome == crate::tray::WindowActivationOutcome::Activated {
-        log::debug!("deep_link:wake-done source={source} silent={silent}");
-    } else {
-        log::error!("deep_link:wake-failed source={source}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -528,7 +500,7 @@ mod tests {
 
     fn signed_open_folder_url(dir: &str, secret: &str) -> String {
         let signature = sign_notification_open_dir(secret, dir).expect("sign notification action");
-        let mut url = url::Url::parse("motrixnext://open-folder").expect("parse static action URL");
+        let mut url = url::Url::parse("rayburst://open-folder").expect("parse static action URL");
         url.query_pairs_mut()
             .append_pair("dir", dir)
             .append_pair("sig", &signature);
@@ -538,7 +510,7 @@ mod tests {
     #[test]
     fn filters_supported_external_inputs_from_argv() {
         let args = vec![
-            "/Applications/MotrixNext.app".to_string(),
+            "/Applications/Rayburst.app".to_string(),
             "--flag".to_string(),
             "file:///Users/example/ubuntu.torrent".to_string(),
             "magnet:?xt=urn:btih:abc".to_string(),
@@ -561,15 +533,15 @@ mod tests {
     #[test]
     fn detects_autostart_args_for_empty_single_instance_launches() {
         assert!(is_autostart_arg_launch(&[
-            "MotrixNext.exe".to_string(),
+            "Rayburst.exe".to_string(),
             "--autostart".to_string(),
         ]));
         assert!(is_autostart_arg_launch(&[
-            "MotrixNext.exe".to_string(),
+            "Rayburst.exe".to_string(),
             "--autostart=true".to_string(),
         ]));
         assert!(!is_autostart_arg_launch(&[
-            "MotrixNext.exe".to_string(),
+            "Rayburst.exe".to_string(),
             "--flag".to_string(),
         ]));
     }
@@ -587,17 +559,17 @@ mod tests {
         );
         assert!(notification_open_target_from_url(&url, "wrong-secret").is_none());
         assert!(notification_open_target_from_url(
-            "motrixnext://open-folder?dir=C%3A%5CDownloads",
+            "rayburst://open-folder?dir=C%3A%5CDownloads",
             secret
         )
         .is_none());
         assert!(notification_open_target_from_url(
-            "motrixnext://open-folder?dir=C%3A%5CDownloads&dir=D%3A%5CMedia&sig=00",
+            "rayburst://open-folder?dir=C%3A%5CDownloads&dir=D%3A%5CMedia&sig=00",
             secret
         )
         .is_none());
         assert!(notification_open_target_from_url(
-            "motrixnext://new?url=https%3A%2F%2Fexample.com",
+            "rayburst://new?url=https%3A%2F%2Fexample.com",
             secret
         )
         .is_none());
@@ -606,13 +578,13 @@ mod tests {
     #[test]
     fn detects_notification_show_task_list_action_url() {
         assert!(is_notification_show_task_list_url(
-            "motrixnext://show-task-list"
+            "rayburst://show-task-list"
         ));
         assert!(is_notification_show_task_list_url(
-            "motrixnext:/show-task-list"
+            "rayburst:/show-task-list"
         ));
         assert!(!is_notification_show_task_list_url(
-            "motrixnext://open-folder?dir=C%3A%5CDownloads"
+            "rayburst://open-folder?dir=C%3A%5CDownloads"
         ));
         assert!(!is_notification_show_task_list_url(
             "https://example.com/show-task-list"
@@ -623,65 +595,64 @@ mod tests {
     fn parses_notification_task_actions_with_strict_gid_validation() {
         assert_eq!(
             notification_task_action_from_url(
-                "motrixnext://task-action?action=open-file&gid=0123456789abcdef"
+                "rayburst://task-action?action=open-file&gid=0123456789abcdef"
             )
             .map(|(_, gid)| gid),
             Some("0123456789abcdef".to_string())
         );
         assert!(notification_task_action_from_url(
-            "motrixnext://task-action?action=show-in-folder&gid=g-1"
+            "rayburst://task-action?action=show-in-folder&gid=g-1"
         )
         .is_some());
         assert!(notification_task_action_from_url(
-            "motrixnext://task-action?action=open-file&gid=bad%20gid"
+            "rayburst://task-action?action=open-file&gid=bad%20gid"
         )
         .is_none());
         assert!(notification_task_action_from_url(
-            "motrixnext://task-action?action=open-file&gid=g1&gid=g2"
+            "rayburst://task-action?action=open-file&gid=g1&gid=g2"
         )
         .is_none());
-        assert!(notification_task_action_from_url(
-            "motrixnext://task-action?action=unknown&gid=g1"
-        )
-        .is_none());
+        assert!(
+            notification_task_action_from_url("rayburst://task-action?action=unknown&gid=g1")
+                .is_none()
+        );
     }
 
     #[test]
     fn parses_notification_task_actions_from_path_urls_and_windows_normalization() {
         assert!(notification_task_action_from_url(
-            "motrixnext://task-action/open-file/0123456789abcdef"
+            "rayburst://task-action/open-file/0123456789abcdef"
         )
         .is_some());
         assert!(
-            notification_task_action_from_url("motrixnext:/task-action/show-in-folder/g-1")
-                .is_some()
+            notification_task_action_from_url("rayburst:/task-action/show-in-folder/g-1").is_some()
         );
         assert!(notification_task_action_from_url(
-            "motrixnext://task-action/?action=open-file&gid=g1"
+            "rayburst://task-action/?action=open-file&gid=g1"
         )
         .is_some());
         assert!(notification_task_action_from_url(
-            "motrixnext:/task-action/?action=show-in-folder&gid=g1"
+            "rayburst:/task-action/?action=show-in-folder&gid=g1"
         )
         .is_some());
         assert!(
-            notification_task_action_from_url("motrixnext://task-action/open-file/g1?extra=1")
+            notification_task_action_from_url("rayburst://task-action/open-file/g1?extra=1")
                 .is_none()
         );
         assert!(
-            notification_task_action_from_url("motrixnext://task-action/open-file/g1/").is_none()
+            notification_task_action_from_url("rayburst://task-action/open-file/g1/").is_none()
         );
-        assert!(notification_task_action_from_url(
-            "motrixnext://task-action/open-file/g1#fragment"
-        )
-        .is_none());
+        assert!(
+            notification_task_action_from_url("rayburst://task-action/open-file/g1#fragment")
+                .is_none()
+        );
     }
 
     #[test]
     fn detects_activate_action_without_query_parameters() {
-        assert!(is_notification_activate_url("motrixnext://activate"));
-        assert!(is_notification_activate_url("motrixnext:/activate"));
-        assert!(!is_notification_activate_url("motrixnext://activate?x=1"));
+        assert!(is_notification_activate_url("rayburst://activate"));
+        assert!(is_notification_activate_url("rayburst:/activate"));
+        assert!(!is_notification_activate_url("rayburst://activate?x=1"));
     }
 
     #[test]
@@ -764,7 +735,7 @@ mod tests {
             let mut inner = state.0.lock().expect("pending deep-link state poisoned");
             append_unique_pending(
                 &mut inner.queue,
-                &["motrixnext://new?url=https%3A%2F%2Fexample.com%2Ffile.zip".to_string()],
+                &["https://example.com/file.zip".to_string()],
             );
             inner.silent = true;
         }
@@ -773,7 +744,7 @@ mod tests {
 
         assert_eq!(
             payload.urls,
-            vec!["motrixnext://new?url=https%3A%2F%2Fexample.com%2Ffile.zip".to_string()]
+            vec!["https://example.com/file.zip".to_string()]
         );
         assert!(payload.silent);
         assert!(!take_pending_deep_links(&state).silent);

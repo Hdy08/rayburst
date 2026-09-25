@@ -133,6 +133,6 @@ mod tests {
         assert!(!is_notification_launch(&[
             "--notification-activation=anything".into()
         ]));
-        assert!(!is_notification_launch(&["motrixnext://activate".into()]));
+        assert!(!is_notification_launch(&["rayburst://activate".into()]));
     }
 }

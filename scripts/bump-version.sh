@@ -41,11 +41,9 @@ fi
 cd "$PROJECT_ROOT"
 npm pkg set "version=$VERSION"
 
-# Sync Cargo.lock with the new package version without upgrading dependencies.
-# 'cargo check' updates the lockfile only for manifest changes (our version bump),
-# unlike 'cargo generate-lockfile' which pulls all deps to latest compatible.
+# Update workspace versions in Cargo.lock without compiling or upgrading dependencies.
 cd "$PROJECT_ROOT/src-tauri"
-cargo check --quiet 2>/dev/null || true
+cargo update --workspace --offline
 
 echo "✓ Bumped version to $VERSION"
 echo "  - $CARGO_TOML"

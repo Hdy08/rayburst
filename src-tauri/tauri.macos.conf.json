@@ -1,10 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBundleCommand": "bash scripts/compile-macos-icon.sh"
+  },
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "Motrix Next",
+        "title": "Rayburst",
         "width": 1068,
         "height": 680,
         "minWidth": 373,
@@ -17,6 +20,15 @@
         "center": true,
         "shadow": true
       }
+    ]
+  },
+  "bundle": {
+    "icon": [
+      "icons/macos-dev.icns",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "generated-icons/Assets.car"
     ]
   }
 }

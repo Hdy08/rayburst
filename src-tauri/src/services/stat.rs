@@ -7,15 +7,15 @@
 //! Port of the frontend `fetchGlobalStat` in `stores/app.ts`.
 
 use super::config::RuntimeConfigState;
-use super::power::PowerGuard;
-use crate::aria2::client::Aria2Client;
+use super::power::{PowerGuard, RETRY_DELAY as POWER_RETRY_DELAY};
+use crate::services::tasks::TaskService;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
 use tauri::Manager;
 use tokio::sync::watch;
 
-/// Adaptive polling interval constants — aligned with `src/shared/timing.ts`.
+/// Native statistics cadence, independent of the frontend task refresh.
 ///
 /// These MUST stay in sync with the frontend `STAT_*` constants.
 /// Mismatched values cause noticeable UI update rate differences
@@ -84,6 +84,46 @@ fn completed_length(task: &crate::aria2::types::Aria2Task) -> u64 {
     parse_length(Some(&task.completed_length))
 }
 
+/// Use task fractions for mixed media/file work; their raw units cannot be summed.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn task_progress(tasks: &[crate::aria2::types::Aria2Task]) -> Option<u64> {
+    let tasks: Vec<_> = tasks
+        .iter()
+        .filter(|task| task.seeder.as_deref() != Some("true"))
+        .collect();
+    if tasks.is_empty() {
+        return None;
+    }
+    if tasks.iter().any(|task| task.media.is_some()) {
+        let mut sum = 0.0;
+        for task in &tasks {
+            let fraction = if let Some(media) = &task.media {
+                if media.live == "true" || media.state == "finalizing" {
+                    return None;
+                }
+                media.progress.as_deref()?.parse::<f64>().ok()?
+            } else {
+                let total = parse_length(Some(&task.total_length));
+                if total == 0 {
+                    return None;
+                }
+                completed_length(task) as f64 / total as f64
+            };
+            if !fraction.is_finite() {
+                return None;
+            }
+            sum += fraction.clamp(0.0, 1.0);
+        }
+        return Some((sum / tasks.len() as f64 * 100.0) as u64);
+    }
+    let total: u64 = tasks
+        .iter()
+        .map(|task| parse_length(Some(&task.total_length)))
+        .sum();
+    let completed: u64 = tasks.iter().map(|task| completed_length(task)).sum();
+    (total > 0).then(|| ((completed as f64 / total as f64).clamp(0.0, 1.0) * 100.0) as u64)
+}
+
 /// Sets the macOS Dock badge label using `NSApp().dockTile().setBadgeLabel()`.
 ///
 /// This is an **app-level** API that accesses `NSApplication.sharedApplication()`
@@ -131,7 +171,7 @@ pub(crate) fn set_dock_badge(label: Option<&str>) {
 /// capture a bitmap snapshot, but `NSProgressIndicator`'s `drawRect:` relies on
 /// the window compositor's CALayer tree which doesn't exist for dock tiles.
 ///
-/// The fix: register a custom `NSProgressIndicator` subclass (`MotrixProgressIndicator`)
+/// The fix: register a custom `NSProgressIndicator` subclass (`RayburstProgressIndicator`)
 /// with a `drawRect:` override that manually paints using `NSBezierPath`.  This is
 /// the same approach used by tao's `TaoProgressIndicator` — the industry-standard
 /// workaround for dock tile progress rendering.
@@ -176,7 +216,7 @@ pub(crate) fn set_dock_progress(progress: Option<u64>) {
 }
 
 /// Finds an existing `NSProgressIndicator` subclass in the dock tile's content view,
-/// or creates a new `MotrixProgressIndicator` (custom subclass with `drawRect:` override).
+/// or creates a new `RayburstProgressIndicator` (custom subclass with `drawRect:` override).
 ///
 /// A plain `NSProgressIndicator` is invisible in dock tiles because `NSDockTile.display()`
 /// captures a bitmap by calling `drawRect:` on the content view hierarchy, and the stock
@@ -230,7 +270,7 @@ unsafe fn get_or_create_progress_indicator(
     indicator
 }
 
-/// Registers the `MotrixProgressIndicator` ObjC class (once) — a custom
+/// Registers the `RayburstProgressIndicator` ObjC class (once) — a custom
 /// `NSProgressIndicator` subclass with a `drawRect:` override for dock tile rendering.
 ///
 /// The class draws a rounded progress bar using `NSBezierPath`:
@@ -248,8 +288,8 @@ fn register_progress_indicator_class() -> *const objc2::runtime::AnyClass {
 
     INIT.call_once(|| unsafe {
         let superclass = objc2::class!(NSProgressIndicator);
-        let mut decl = ClassBuilder::new(c"MotrixProgressIndicator", superclass)
-            .expect("Failed to create MotrixProgressIndicator class");
+        let mut decl = ClassBuilder::new(c"RayburstProgressIndicator", superclass)
+            .expect("Failed to create RayburstProgressIndicator class");
 
         // Register the custom drawRect: method.
         // Uses raw pointer (*mut AnyObject) to satisfy the HRTB lifetime
@@ -347,7 +387,7 @@ impl StatServiceHandle {
 }
 
 /// Spawns the global stat service as a background tokio task.
-pub fn spawn_stat_service(app: tauri::AppHandle, aria2: Arc<Aria2Client>) -> StatServiceHandle {
+pub fn spawn_stat_service(app: tauri::AppHandle, aria2: Arc<TaskService>) -> StatServiceHandle {
     let (stop_tx, stop_rx) = watch::channel(false);
 
     let join_handle = tokio::spawn(async move {
@@ -391,18 +431,17 @@ impl IntervalState {
 
 async fn stat_loop(
     app: tauri::AppHandle,
-    aria2: Arc<Aria2Client>,
+    aria2: Arc<TaskService>,
     mut stop_rx: watch::Receiver<bool>,
 ) {
     let mut interval_state = IntervalState::new();
+    let mut consecutive_rpc_failures = 0_u32;
 
-    // Keep-awake RAII guard: held while downloads are active, dropped when idle.
-    // The guard prevents system idle sleep via OS-native APIs while allowing
-    // the display to turn off according to the user's power settings:
-    //   macOS:   IOPMAssertionCreateWithName (PreventUserIdleSystemSleep)
-    //   Windows: PowerCreateRequest + PowerSetRequest(SystemRequired)
-    //   Linux:   systemd Inhibit("idle") (D-Bus)
+    // Keep-awake guard: held while downloads are active and released when idle.
+    // Linux acquisition can fail when the desktop portal is temporarily
+    // unavailable, so retries are rate-limited independently of stat polling.
     let mut awake_guard: Option<PowerGuard> = None;
+    let mut power_retry_at: Option<std::time::Instant> = None;
     let mut last_tray_title: Option<String> = None;
 
     loop {
@@ -410,6 +449,11 @@ async fn stat_loop(
             _ = tokio::time::sleep(interval_state.duration()) => {},
             _ = stop_rx.changed() => {
                 if *stop_rx.borrow() {
+                    if let Some(guard) = awake_guard.take() {
+                        if let Err(e) = guard.release().await {
+                            log::warn!("keep_awake: failed to release assertion: {e}");
+                        }
+                    }
                     log::info!("stat_service: stopped");
                     return;
                 }
@@ -419,29 +463,24 @@ async fn stat_loop(
         let stat = match aria2.get_global_stat().await {
             Ok(s) => s,
             Err(e) => {
+                consecutive_rpc_failures += 1;
                 log::debug!("stat_service: get_global_stat failed: {e}");
+                if consecutive_rpc_failures == 5 {
+                    crate::engine::supervisor::report_rpc_unhealthy(app.clone(), e.to_string());
+                }
                 interval_state.increase_idle();
                 continue;
             }
         };
+        consecutive_rpc_failures = 0;
 
         // Parse string values to u64
-        let download_speed_raw = stat.download_speed.parse::<u64>().unwrap_or(0);
+        let download_speed = stat.download_speed.parse::<u64>().unwrap_or(0);
         let upload_speed = stat.upload_speed.parse::<u64>().unwrap_or(0);
         let num_active = stat.num_active.parse::<u64>().unwrap_or(0);
         let num_waiting = stat.num_waiting.parse::<u64>().unwrap_or(0);
         let num_stopped = stat.num_stopped.parse::<u64>().unwrap_or(0);
         let num_stopped_total = stat.num_stopped_total.parse::<u64>().unwrap_or(0);
-
-        // aria2 uses a 10-second sliding window for speed calculation
-        // (SpeedCalc::WINDOW_TIME = 10s). After pausing, stale bytes in the
-        // window cause getGlobalStat to report non-zero speed for up to 10s.
-        // Normalize to 0 when no tasks are actively downloading.
-        let download_speed = if num_active > 0 {
-            download_speed_raw
-        } else {
-            0
-        };
 
         // Adaptive interval
         if num_active > 0 {
@@ -469,34 +508,40 @@ async fn stat_loop(
             let cfg = rc_state.snapshot().await;
 
             // ── Keep-awake management ────────────────────────────────
-            // Acquire the OS power assertion when downloads are active
-            // and the user has opted in.  Release automatically (RAII
-            // drop) when all downloads finish or the setting is toggled
-            // off.  This runs in stat_service rather than a Tauri
-            // command so it works in lightweight mode when the WebView
-            // is destroyed.
             if cfg.keep_awake && num_active > 0 {
-                if awake_guard.is_none() {
-                    match PowerGuard::acquire_download() {
+                let retry_due = power_retry_at.is_none_or(|at| std::time::Instant::now() >= at);
+                if awake_guard.is_none() && retry_due {
+                    match PowerGuard::acquire_download().await {
                         Ok(guard) => {
                             let backend = guard.backend_name();
                             awake_guard = Some(guard);
+                            power_retry_at = None;
                             log::info!(
                                 "keep_awake: assertion acquired backend={backend} active={num_active}"
                             );
                         }
                         Err(e) => {
+                            power_retry_at = Some(std::time::Instant::now() + POWER_RETRY_DELAY);
                             log::warn!("keep_awake: failed to acquire assertion: {e}");
                         }
                     }
                 }
-            } else if awake_guard.is_some() {
-                awake_guard = None; // RAII drop → OS releases the power assertion
-                log::info!("keep_awake: assertion released active={num_active}");
+            } else {
+                power_retry_at = None;
+                if let Some(guard) = awake_guard.take() {
+                    match guard.release().await {
+                        Ok(()) => {
+                            log::info!("keep_awake: assertion released active={num_active}");
+                        }
+                        Err(e) => {
+                            log::warn!("keep_awake: failed to release assertion: {e}");
+                        }
+                    }
+                }
             }
 
             // ── Tray title (macOS menu bar / Linux appindicator label) ──
-            if let Some(tray) = app.tray_by_id("motrix-next") {
+            if let Some(tray) = app.tray_by_id("rayburst") {
                 let next_title =
                     tray_title_for_speed(cfg.tray_speedometer, download_speed, upload_speed);
                 if tray_title_needs_update(&last_tray_title, &next_title) {
@@ -544,16 +589,7 @@ async fn stat_loop(
                 if cfg.show_progress_bar && num_active > 0 {
                     match aria2.tell_active().await {
                         Ok(tasks) => {
-                            let total: u64 = tasks
-                                .iter()
-                                .filter_map(|t| t.total_length.parse::<u64>().ok())
-                                .sum();
-                            let completed: u64 = tasks.iter().map(completed_length).sum();
-                            let pct = if total > 0 {
-                                Some((completed as f64 / total as f64 * 100.0) as u64)
-                            } else {
-                                Some(0)
-                            };
+                            let pct = task_progress(&tasks);
                             let _ = app.run_on_main_thread(move || {
                                 set_dock_progress(pct);
                             });
@@ -575,19 +611,14 @@ async fn stat_loop(
                 if cfg.show_progress_bar && num_active > 0 {
                     match aria2.tell_active().await {
                         Ok(tasks) => {
-                            let total: u64 = tasks
-                                .iter()
-                                .filter_map(|t| t.total_length.parse::<u64>().ok())
-                                .sum();
-                            let completed: u64 = tasks.iter().map(completed_length).sum();
-                            let progress = if total > 0 {
-                                completed as f64 / total as f64
-                            } else {
-                                0.0
-                            };
+                            let progress = task_progress(&tasks);
                             let _ = window.set_progress_bar(tauri::window::ProgressBarState {
-                                status: Some(tauri::window::ProgressBarStatus::Normal),
-                                progress: Some((progress * 100.0) as u64),
+                                status: Some(if progress.is_some() {
+                                    tauri::window::ProgressBarStatus::Normal
+                                } else {
+                                    tauri::window::ProgressBarStatus::Indeterminate
+                                }),
+                                progress,
                             });
                         }
                         Err(e) => {
@@ -741,22 +772,11 @@ mod tests {
                 length: "1024".to_string(),
                 completed_length: "1024".to_string(),
                 selected: "true".to_string(),
+                priority: None,
                 uris: vec![],
             }],
             ..Aria2Task::default()
         }
-    }
-
-    #[test]
-    fn constants_match_frontend_timing_ts() {
-        // These constants MUST match src/shared/timing.ts exactly.
-        // If timing.ts changes and these tests fail, update the Rust
-        // constants to stay in sync.
-        assert_eq!(STAT_BASE_INTERVAL_MS, 500, "BASE must match timing.ts");
-        assert_eq!(STAT_PER_TASK_INTERVAL_MS, 100, "PER_TASK must match");
-        assert_eq!(STAT_MIN_INTERVAL_MS, 500, "MIN must match timing.ts");
-        assert_eq!(STAT_MAX_INTERVAL_MS, 6000, "MAX must match timing.ts");
-        assert_eq!(STAT_IDLE_INCREMENT_MS, 100, "IDLE_INCREMENT must match");
     }
 
     // ── StatUpdate serialization ────────────────────────────────────
@@ -787,15 +807,24 @@ mod tests {
 
         assert_eq!(completed_length(&task), 200);
     }
-
-    // ── power guard integration ─────────────────────────────────────
-
-    /// Validates that the keepawake Builder API compiles and returns
-    /// the expected types.  Does NOT create an actual OS assertion
-    /// (safe for headless CI environments).
     #[test]
-    fn power_guard_builder_compiles() {
-        let _: fn() -> Result<crate::services::power::PowerGuard, crate::error::AppError> =
-            crate::services::power::PowerGuard::acquire_download;
+    fn media_progress_uses_duration_and_keeps_live_or_finalizing_indeterminate() {
+        let mut task = crate::aria2::types::Aria2Task {
+            total_length: "0".into(),
+            completed_length: "0".into(),
+            media: Some(crate::aria2::types::Aria2Media {
+                live: "false".into(),
+                state: "downloading".into(),
+                progress: Some("0.5".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(task_progress(&[task.clone()]), Some(50));
+        task.media.as_mut().unwrap().live = "true".into();
+        assert_eq!(task_progress(&[task.clone()]), None);
+        task.media.as_mut().unwrap().live = "false".into();
+        task.media.as_mut().unwrap().state = "finalizing".into();
+        assert_eq!(task_progress(&[task]), None);
     }
 }

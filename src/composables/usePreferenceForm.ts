@@ -15,16 +15,18 @@ import { filterHotReloadableKeys } from '@shared/utils/config'
 import { changeGlobalOption, isEngineReady } from '@/api/aria2'
 import { logger } from '@shared/logger'
 import type { AppConfig } from '@shared/types'
+import { validateAppConfigCandidate } from '@shared/configConstraints'
+import { buildSystemConfigFromAppConfig } from '@shared/utils/systemConfig'
 
 export interface UsePreferenceFormOptions<T extends Record<string, unknown>> {
   /** Build the initial form state from the current preference config. */
   buildForm: () => T
 
   /**
-   * Map form values to the key-value pairs sent to `save_system_config`.
+   * Map form values to the engine option snapshot.
    * Only system-level aria2 config keys belong here.
    */
-  buildSystemConfig: (form: T) => Record<string, string>
+  buildSystemConfig?: (form: T) => Record<string, string>
 
   /**
    * Optional pre-save hook. Return `false` to abort the save (e.g. validation failure).
@@ -38,6 +40,22 @@ export interface UsePreferenceFormOptions<T extends Record<string, unknown>> {
    * (e.g. showing a "restart required" dialog when the locale changes).
    */
   afterSave?: (form: T, prevConfig: Partial<AppConfig>) => void | Promise<void>
+
+  /** Persistent progress and rollback messages for saves with visible latency. */
+  saveFeedback?:
+    | {
+        success: string
+        restored: string
+        rollbackFailed: string
+      }
+    | ((
+        form: T,
+        prevConfig: Partial<AppConfig>,
+      ) => {
+        success: string
+        restored: string
+        rollbackFailed: string
+      } | null)
 
   /**
    * Optional transform applied to the form data before passing it to
@@ -74,50 +92,123 @@ export function usePreferenceForm<T extends Record<string, unknown>>(options: Us
   // ── Save & Reset ────────────────────────────────────────────────────
 
   async function handleSave(): Promise<void> {
+    const initialStoreData: Partial<AppConfig> = options.transformForStore
+      ? options.transformForStore(form.value as T)
+      : { ...(form.value as T) }
+    const initialIssues = validateAppConfigCandidate({ ...preferenceStore.config, ...initialStoreData })
+    if (initialIssues.length > 0) {
+      const { constraint } = initialIssues[0]
+      message.error(t('preferences.value-range-error', { min: constraint.min, max: constraint.max }))
+      return
+    }
+
     if (options.beforeSave && !(await options.beforeSave(form.value as T))) {
       return
     }
 
-    // Snapshot previous config BEFORE mutating the store,
-    // so afterSave hooks can compare old vs new values.
     const prevConfig = { ...preferenceStore.config }
+    const previousSystemConfig = options.buildSystemConfig?.(options.buildForm()) ?? {}
 
     const storeData: Partial<AppConfig> = options.transformForStore
       ? options.transformForStore(form.value as T)
       : { ...(form.value as T) }
-
-    const saved = await preferenceStore.updateAndSave(storeData)
-    if (!saved) {
-      message.error(t('preferences.save-fail-message'))
-      throw new Error('Preference persistence failed')
+    const candidate = { ...preferenceStore.config, ...storeData }
+    const validationIssues = validateAppConfigCandidate(candidate)
+    if (validationIssues.length > 0) {
+      const { constraint } = validationIssues[0]
+      message.error(t('preferences.value-range-error', { min: constraint.min, max: constraint.max }))
+      return
     }
+    const systemConfig = options.buildSystemConfig?.(form.value as T) ?? {}
+    const savedForm = JSON.parse(JSON.stringify(form.value)) as T
+    const hotConfig = filterHotReloadableKeys(systemConfig)
+    const previousHotConfig = filterHotReloadableKeys(previousSystemConfig)
+    const changedHotConfig = Object.fromEntries(
+      Object.entries(hotConfig).filter(([key, value]) => previousHotConfig[key] !== value),
+    )
+    const rollbackHotConfig = Object.fromEntries(
+      Object.keys(changedHotConfig)
+        .filter((key) => previousHotConfig[key] !== undefined)
+        .map((key) => [key, previousHotConfig[key]]),
+    )
+    const shouldHotReload = isEngineReady() && Object.keys(changedHotConfig).length > 0
+    let hotReloadAttempted = false
+    let preferencesPersisted = false
+    let systemConfigWriteAttempted = false
+    const saveFeedback =
+      typeof options.saveFeedback === 'function'
+        ? options.saveFeedback(form.value as T, prevConfig)
+        : options.saveFeedback
+    try {
+      if (shouldHotReload) {
+        hotReloadAttempted = true
+        await changeGlobalOption(changedHotConfig as Partial<AppConfig>)
+      }
 
-    const systemConfig = options.buildSystemConfig(form.value as T)
-    if (Object.keys(systemConfig).length > 0) {
-      await invoke('save_system_config', { config: systemConfig })
+      const saved = await preferenceStore.updateAndSave(storeData)
+      if (!saved) {
+        throw new Error('Preference persistence failed')
+      }
+      preferencesPersisted = true
 
-      // Hot-reload changeable options to the running aria2 engine via RPC.
-      // Keys that require an engine restart (ports, secret) are filtered out;
-      // the afterSave hook is responsible for prompting the user to restart.
-      if (isEngineReady()) {
-        const hotKeys = filterHotReloadableKeys(systemConfig)
-        if (Object.keys(hotKeys).length > 0) {
-          try {
-            await changeGlobalOption(hotKeys as Partial<AppConfig>)
-          } catch (e) {
-            logger.debug('PreferenceForm.hotReload', `changeGlobalOption failed (engine may be mid-restart): ${e}`)
-          }
+      if (Object.keys(systemConfig).length > 0) {
+        systemConfigWriteAttempted = true
+        await invoke('replace_system_config', {
+          config: buildSystemConfigFromAppConfig(candidate as AppConfig, String(candidate.dir ?? '')),
+        })
+      }
+
+      await options.afterSave?.(savedForm, prevConfig)
+    } catch (error) {
+      let rollbackFailed = false
+      logger.error('PreferenceForm.save', error)
+
+      if (preferencesPersisted) {
+        const restored = await preferenceStore.updateAndSave(prevConfig)
+        if (!restored) {
+          rollbackFailed = true
+          logger.error('PreferenceForm.rollback', 'failed to restore preference config')
         }
       }
+      if (systemConfigWriteAttempted && Object.keys(previousSystemConfig).length > 0) {
+        try {
+          await invoke('replace_system_config', {
+            config: buildSystemConfigFromAppConfig(prevConfig as AppConfig, String(prevConfig.dir ?? '')),
+          })
+        } catch (rollbackError) {
+          rollbackFailed = true
+          logger.error('PreferenceForm.rollbackSystemConfig', rollbackError)
+        }
+      }
+      if (hotReloadAttempted && Object.keys(rollbackHotConfig).length > 0) {
+        try {
+          await changeGlobalOption(rollbackHotConfig as Partial<AppConfig>)
+        } catch (rollbackError) {
+          rollbackFailed = true
+          logger.error('PreferenceForm.rollback', rollbackError)
+        }
+      }
+      if (!rollbackFailed) {
+        Object.assign(form.value, options.buildForm())
+        savedSnapshot.value = JSON.parse(JSON.stringify(form.value)) as T
+      }
+      message.error(
+        saveFeedback
+          ? rollbackFailed
+            ? saveFeedback.rollbackFailed
+            : saveFeedback.restored
+          : t('preferences.save-fail-message'),
+      )
+      throw error
     }
 
     // Only mark as saved AFTER both stores persist successfully.
     // Moving this earlier would clear the dirty flag prematurely,
     // causing route-leave guards to skip if an async save fails.
+    Object.assign(form.value, options.buildForm())
     savedSnapshot.value = JSON.parse(JSON.stringify(form.value)) as T
 
-    await options.afterSave?.(form.value as T, prevConfig)
-
+    if (saveFeedback) message.success(saveFeedback.success)
     message.success(t('preferences.save-success-message'))
   }
 

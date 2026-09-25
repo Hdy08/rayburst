@@ -29,7 +29,7 @@ pub async fn send_task_start_notification(
 }
 
 #[tauri::command]
-pub fn send_app_system_notification(
+pub async fn send_app_system_notification(
     app: AppHandle,
     title: String,
     body: String,

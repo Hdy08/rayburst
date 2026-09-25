@@ -49,7 +49,9 @@ import {
   dateNbNO,
 } from 'naive-ui'
 import { useTheme } from './composables/useTheme'
+import { useReducedMotionClass } from './composables/useReducedMotion'
 import { useVisibilityPause } from './composables/useVisibilityPause'
+import { isSupportedLocale, type SupportedLocale } from '@shared/localeCatalog'
 
 import { APP_COLOR_TOKENS_KEY, useColorScheme } from './composables/useColorScheme'
 
@@ -58,10 +60,11 @@ const { isDark } = useTheme()
 const { colorTokens, themeOverrides } = useColorScheme()
 provide(APP_COLOR_TOKENS_KEY, colorTokens)
 useVisibilityPause()
+useReducedMotionClass()
 
 const theme = computed(() => (isDark.value ? darkTheme : null))
 
-const naiveLocaleMap: Record<string, NLocale> = {
+const naiveLocaleMap: Partial<Record<SupportedLocale, NLocale>> = {
   'zh-CN': zhCN,
   'zh-TW': zhTW,
   ja: jaJP,
@@ -82,7 +85,7 @@ const naiveLocaleMap: Record<string, NLocale> = {
   nl: nlNL,
   nb: nbNO,
 }
-const naiveDateLocaleMap: Record<string, NDateLocale> = {
+const naiveDateLocaleMap: Partial<Record<SupportedLocale, NDateLocale>> = {
   'zh-CN': dateZhCN,
   'zh-TW': dateZhTW,
   ja: dateJaJP,
@@ -104,8 +107,12 @@ const naiveDateLocaleMap: Record<string, NDateLocale> = {
   nb: dateNbNO,
 }
 
-const naiveLocale = computed(() => naiveLocaleMap[currentLocale.value] || null)
-const naiveDateLocale = computed(() => naiveDateLocaleMap[currentLocale.value] || null)
+const naiveLocale = computed(() =>
+  isSupportedLocale(currentLocale.value) ? naiveLocaleMap[currentLocale.value] || null : null,
+)
+const naiveDateLocale = computed(() =>
+  isSupportedLocale(currentLocale.value) ? naiveDateLocaleMap[currentLocale.value] || null : null,
+)
 </script>
 
 <template>

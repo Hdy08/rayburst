@@ -1,188 +1,85 @@
-; NSIS installer hooks for Motrix Next.
-; These macros and callbacks are invoked by Tauri's NSIS template
-; during both fresh installs AND silent OTA (updater) installs.
+; The scoped hooks below replace Tauri's basename-only process check, which
+; could terminate a different Rayburst installation.
+!macroundef CheckIfAppIsRunning
+!macro CheckIfAppIsRunning executableName productName
+!macroend
 
-
-; ────────────────────────────────────────────────────────────────
-; MUI_CUSTOMFUNCTION_GUIINIT — MANUPRODUCTKEY registry bridge
-; ────────────────────────────────────────────────────────────────
-;
-; Changing bundle.publisher from unset to "AnInsomniacy" shifted
-; the MANUFACTURER variable (motrix → AnInsomniacy), which moved
-; the MANUPRODUCTKEY registry path:
-;
-;   OLD: HKCU\Software\motrix\MotrixNext        (≤ 3.6.1)
-;   NEW: HKCU\Software\AnInsomniacy\MotrixNext   (≥ 3.6.2)
-;
-; The template's PageLeaveReinstall reads MANUPRODUCTKEY to build
-; the `_?=` parameter when launching the old uninstaller.  An
-; empty `_?=` causes the uninstaller to fail its integrity check
-; → "NSIS Error: Error launching installer" (issue #159).
-;
-; Fix: copy the install-directory value from the old key to the
-; new key BEFORE any pages are displayed.
-;
-; MUI2 owns .onGUIInit (via MUI_FUNCTION_GUIINIT), so we cannot
-; define it directly.  Instead, use MUI_CUSTOMFUNCTION_GUIINIT to
-; register a named function that MUI2 calls from within its own
-; .onGUIInit.  This !define must appear BEFORE !insertmacro
-; MUI_LANGUAGE — which it does, since hooks are included at
-; template line 33, well before the language macros.
-;
-; Execution order:
-;   .onInit  (template)  → RestorePreviousInstallLocation (reads
-;                           new MANUPRODUCTKEY — empty, no-op)
-;   .onGUIInit (MUI2)    → calls MotrixBridgeMANUPRODUCTKEY (this)
-;   Welcome page
-;   MULTIUSER page       → RestorePreviousInstallLocation called
-;                           again (now succeeds via bridged data)
-;   Reinstall page       → PageLeaveReinstall reads MANUPRODUCTKEY
-;                           (now succeeds — _?= has correct path)
-;   Section Install      → PREINSTALL hook (handles the rest)
-;
-; Silent mode: .onGUIInit is NOT called, but silent mode skips all
-; pages — PageLeaveReinstall never fires, and the PREINSTALL hook
-; handles directory redirection independently.
-;
-; This function is safe for fresh installs (old key absent → no-op)
-; and for already-migrated users (old key already cleaned up by
-; PREINSTALL → no-op).
-
-!define MUI_CUSTOMFUNCTION_GUIINIT MotrixBridgeMANUPRODUCTKEY
-
-Function MotrixBridgeMANUPRODUCTKEY
-  ; Try HKCU first (old currentUser installs write here)
-  ReadRegStr $R0 HKCU "Software\motrix\MotrixNext" ""
-  StrCmp $R0 "" _motrix_bridge_hklm 0
-    WriteRegStr HKCU "Software\AnInsomniacy\MotrixNext" "" $R0
-    DetailPrint "Bridged MANUPRODUCTKEY (HKCU): $R0"
-    Goto _motrix_bridge_done
-
-  _motrix_bridge_hklm:
-  ; Try HKLM (unlikely but defensive: per-machine with old publisher)
-  ReadRegStr $R0 HKLM "Software\motrix\MotrixNext" ""
-  StrCmp $R0 "" _motrix_bridge_done 0
-    WriteRegStr HKLM "Software\AnInsomniacy\MotrixNext" "" $R0
-    DetailPrint "Bridged MANUPRODUCTKEY (HKLM): $R0"
-
-  _motrix_bridge_done:
-FunctionEnd
-
-
-; ────────────────────────────────────────────────────────────────
-; NSIS_HOOK_PREINSTALL — in-place upgrade migration
-; ────────────────────────────────────────────────────────────────
+; Run the new executable from NSIS-owned temporary storage. No installed file
+; is replaced until the exact installation's processes have exited.
+!macro RAYBURST_PREPARE_INSTALL
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=rayburst-maintenance.exe "${MAINBINARYSRCPATH}"
+  nsExec::ExecToStack '"$PLUGINSDIR\rayburst-maintenance.exe" --prepare-install "$INSTDIR"'
+  Pop $R0
+  Pop $R1
+  SetOutPath "$INSTDIR"
+  ${If} $R0 != 0
+    DetailPrint "$R1"
+    Abort "Rayburst could not stop the installed processes. $R1"
+  ${EndIf}
+!macroend
 
 !macro NSIS_HOOK_PREINSTALL
-  ; ── Migration: currentUser → both ──────────────────────────────
-  ;
-  ; Versions ≤ 3.6.2-beta.1 shipped with installMode "currentUser",
-  ; which writes the uninstall registry entry under HKCU.
-  ;
-  ; Starting from 3.6.2, installMode is "both".  In silent/update
-  ; mode (/S), the "both" NSIS template defaults to per-machine
-  ; scope and reads HKLM — it will NOT find the old HKCU entry,
-  ; causing a duplicate installation.
-  ;
-  ; Fix: unconditionally check HKCU for a previous per-user install.
-  ; If found:
-  ;   1. Strip surrounding quotes from InstallLocation
-  ;   2. Redirect $INSTDIR + $OUTDIR to the old path
-  ;   3. Delete the stale HKCU uninstall entry (prevents "Apps &
-  ;      Features" from showing two MotrixNext rows)
-  ;   4. Delete the orphaned MANUPRODUCTKEY left by the old
-  ;      MANUFACTURER value ("motrix" → "AnInsomniacy")
-  ;   5. Remove any Program Files residual from prior buggy installs
-  ;
-  ; Registry key: HKCU\Software\Microsoft\Windows\CurrentVersion
-  ;                 \Uninstall\MotrixNext
-  ; Tauri uses the productName (not identifier) as the key name.
-  ; The InstallLocation value is stored WITH surrounding quotes
-  ; (e.g., "C:\Users\xxx\AppData\Local\MotrixNext"), so we must
-  ; strip them before assigning to $INSTDIR.
-  ;
-  ; Safety: this hook runs inside `Section Install`, BEFORE any
-  ; File commands or registry writes.  The template's subsequent
-  ; `WriteRegStr SHCTX UNINSTKEY ...` will create the definitive
-  ; new entry — nothing between this hook and that write depends
-  ; on the HKCU data we delete here.  See installer.nsi lines
-  ; 619–700 for the authoritative execution order.
+  !insertmacro RAYBURST_PREPARE_INSTALL
+!macroend
 
-  ReadRegStr $R0 HKCU \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\MotrixNext" \
-    "InstallLocation"
-  StrCmp $R0 "" _motrix_skip_migration 0
+; Tauri may restore the same ProgID from a previous installation during uninstall.
+; Do not leave a default pointing at the application class we just removed.
+!macro NSIS_HOOK_POSTUNINSTALL
+  ReadRegStr $R0 SHCTX "Software\Classes\.torrent" ""
+  ${If} $R0 == "${BUNDLEID}.torrent"
+    DeleteRegValue SHCTX "Software\Classes\.torrent" ""
+  ${EndIf}
+  DeleteRegValue SHCTX "Software\Classes\.torrent" "${BUNDLEID}.torrent_backup"
+  ${If} $UpdateMode != 1
+    ReadRegStr $R0 HKCU "Software\Classes\CLSID\{22FC9AA3-1A56-47FF-A6A5-62D3E230A135}\LocalServer32" ""
+    ${If} $R0 == '$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --notification-activation'
+      ReadRegStr $R1 HKCU "Software\Classes\AppUserModelId\dev.aninsomniacy.rayburst" "CustomActivator"
+      ${If} $R1 == "{22FC9AA3-1A56-47FF-A6A5-62D3E230A135}"
+        DeleteRegValue HKCU "Software\Classes\AppUserModelId\dev.aninsomniacy.rayburst" "CustomActivator"
+      ${EndIf}
+      DeleteRegKey HKCU "Software\Classes\CLSID\{22FC9AA3-1A56-47FF-A6A5-62D3E230A135}\LocalServer32"
+      DeleteRegKey /ifempty HKCU "Software\Classes\CLSID\{22FC9AA3-1A56-47FF-A6A5-62D3E230A135}"
+    ${EndIf}
+  ${EndIf}
+!macroend
 
-    ; ── 1. Strip surrounding quotes ──────────────────────────────
-    ; "C:\path" → C:\path
-    ; Uses named labels instead of fragile +N relative offsets.
-    StrCpy $R1 $R0 1        ; first character
-    StrCmp $R1 '"' 0 _motrix_no_lead_quote
-      StrCpy $R0 $R0 "" 1   ; remove first char
-    _motrix_no_lead_quote:
-    StrLen $R1 $R0
-    IntOp $R1 $R1 - 1
-    StrCpy $R2 $R0 1 $R1    ; last character
-    StrCmp $R2 '"' 0 _motrix_no_trail_quote
-      StrCpy $R0 $R0 $R1    ; remove last char
-    _motrix_no_trail_quote:
+; Rayburst Native Messaging registration and icon refresh.
 
-    ; ── 2. Redirect install directory ────────────────────────────
-    StrCpy $INSTDIR $R0
-    ; Tauri's template calls `SetOutPath $INSTDIR` BEFORE this hook,
-    ; so $OUTDIR still points to the template's default.  Re-issue
-    ; SetOutPath to sync $OUTDIR with the corrected $INSTDIR.
-    SetOutPath $INSTDIR
-    DetailPrint "Migrated install directory: $INSTDIR"
-
-    ; ── 3. Delete stale HKCU uninstall entry ─────────────────────
-    ; This is the root cause of duplicate "Apps & Features" entries.
-    ; The Install section will write a fresh entry to SHCTX (HKLM
-    ; for "all users", HKCU for "current user") at the end.
-    DeleteRegKey HKCU \
-      "Software\Microsoft\Windows\CurrentVersion\Uninstall\MotrixNext"
-    DetailPrint "Deleted stale HKCU uninstall entry"
-
-    ; ── 4. Delete orphaned MANUPRODUCTKEY ────────────────────────
-    ; Versions that shipped with publisher unset derived MANUFACTURER
-    ; from the identifier's second segment ("motrix"), writing the
-    ; install-location cache to HKCU\Software\motrix\MotrixNext.
-    ; Now that publisher = "AnInsomniacy", MANUPRODUCTKEY changed to
-    ; HKCU\Software\AnInsomniacy\MotrixNext.  Clean up the old one
-    ; so RestorePreviousInstallLocation does not read stale data.
-    DeleteRegKey HKCU "Software\motrix\MotrixNext"
-    DeleteRegKey /ifempty HKCU "Software\motrix"
-    DetailPrint "Deleted orphaned registry key: Software\motrix"
-
-    ; ── 5. Remove Program Files residual ─────────────────────────
-    ; A prior beta with a SetOutPath bug left partial files in the
-    ; per-machine default directory while the real install lived in
-    ; AppData\Local.  Clean up only if $INSTDIR is NOT under the
-    ; system Program Files directory (i.e., the migration target
-    ; differs from the per-machine default location).
-    ;
-    ; Dynamic comparison: extract the first N characters of $INSTDIR
-    ; where N = length of $PROGRAMFILES64, then compare.  This works
-    ; regardless of which drive Windows is installed on.
-    StrLen $R3 "$PROGRAMFILES64"
-    StrCpy $R4 $INSTDIR $R3
-    StrCmp $R4 "$PROGRAMFILES64" _motrix_skip_pf_cleanup 0
-      ; $INSTDIR is NOT under Program Files — safe to remove residual
-      IfFileExists "$PROGRAMFILES64\MotrixNext\*.*" 0 _motrix_skip_pf_cleanup
-        RMDir /r "$PROGRAMFILES64\MotrixNext"
-        DetailPrint "Removed Program Files residual: $PROGRAMFILES64\MotrixNext"
-    _motrix_skip_pf_cleanup:
-
-  _motrix_skip_migration:
-
-  ; Defense-in-depth: kill any lingering sidecar before file copy.
-  ; Tauri bundles externalBin as motrix-next-engine.exe.
-  ; On Windows, a running .exe is locked by the OS and cannot be
-  ; overwritten.  taskkill exits 128 if the process is absent.
-  nsExec::Exec 'taskkill /F /IM motrix-next-engine.exe'
+; Advertise capabilities without taking over the user's public defaults.
+!macro RAYBURST_REGISTER_CANDIDATE suffix association section
+  !if "${section}" == "URLAssociations"
+    WriteRegStr SHCTX "Software\Classes\${BUNDLEID}.${suffix}" "URL Protocol" ""
+  !endif
+  WriteRegStr SHCTX "Software\Classes\${BUNDLEID}.${suffix}" "" "Rayburst ${association}"
+  WriteRegStr SHCTX "Software\Classes\${BUNDLEID}.${suffix}\DefaultIcon" "" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+  WriteRegStr SHCTX "Software\Classes\${BUNDLEID}.${suffix}\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+  WriteRegStr SHCTX "Software\${BUNDLEID}\Capabilities\${section}" "${association}" "${BUNDLEID}.${suffix}"
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  WriteRegStr SHCTX "Software\${BUNDLEID}\Capabilities" "ApplicationName" "${PRODUCTNAME}"
+  WriteRegStr SHCTX "Software\${BUNDLEID}\Capabilities" "ApplicationDescription" "Download files and media with Rayburst"
+  WriteRegStr SHCTX "Software\${BUNDLEID}\Capabilities" "ApplicationIcon" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+  WriteRegStr SHCTX "Software\RegisteredApplications" "${BUNDLEID}" "Software\${BUNDLEID}\Capabilities"
+  !insertmacro RAYBURST_REGISTER_CANDIDATE torrent .torrent FileAssociations
+  !insertmacro RAYBURST_REGISTER_CANDIDATE magnet magnet URLAssociations
+  !insertmacro RAYBURST_REGISTER_CANDIDATE ed2k ed2k URLAssociations
+  !insertmacro RAYBURST_REGISTER_CANDIDATE thunder thunder URLAssociations
+  !insertmacro RAYBURST_REGISTER_CANDIDATE rayburst rayburst URLAssociations
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  ; Register the allowlisted, activation-only native messaging host.
+  WriteRegStr SHCTX \
+    "Software\Google\Chrome\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" \
+    "" "$INSTDIR\native-messaging\manifests\chromium.json"
+  WriteRegStr SHCTX \
+    "Software\Microsoft\Edge\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" \
+    "" "$INSTDIR\native-messaging\manifests\chromium.json"
+  WriteRegStr SHCTX \
+    "Software\Mozilla\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" \
+    "" "$INSTDIR\native-messaging\manifests\firefox.json"
+
   ; Flush Windows icon cache so updated icons appear immediately.
   ; ie4uinit.exe is a built-in Windows 10/11 system utility that
   ; soft-refreshes the shell icon display without requiring a reboot.
@@ -191,18 +88,90 @@ FunctionEnd
   nsExec::ExecToLog 'ie4uinit.exe -show'
 !macroend
 
-!macro NSIS_HOOK_POSTUNINSTALL
-  ; Keep notification activation during an update. On actual uninstall, remove
-  ; only keys still owned by this installation, after cancellation is no longer possible.
-  ${If} $UpdateMode != 1
-    ReadRegStr $R0 HKCU "Software\Classes\CLSID\{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}\LocalServer32" ""
-    ${If} $R0 == '$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --notification-activation'
-      ReadRegStr $R1 HKCU "Software\Classes\AppUserModelId\com.motrix.next" "CustomActivator"
-      ${If} $R1 == "{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}"
-        DeleteRegValue HKCU "Software\Classes\AppUserModelId\com.motrix.next" "CustomActivator"
+!macro RAYBURST_REMOVE_PROTOCOL scheme
+  ReadRegStr $R0 HKCU "Software\Classes\${scheme}\shell\open\command" ""
+  ${If} $R0 == '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+    DeleteRegKey HKCU "Software\Classes\${scheme}"
+  ${EndIf}
+  ReadRegStr $R0 HKCU "Software\Classes\${BUNDLEID}.${scheme}\shell\open\command" ""
+  ${If} $R0 == '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+    DeleteRegKey HKCU "Software\Classes\${BUNDLEID}.${scheme}"
+    DeleteRegValue HKCU "Software\${BUNDLEID}\Capabilities\URLAssociations" "${scheme}"
+  ${EndIf}
+!macroend
+
+!macro RAYBURST_REMOVE_CANDIDATE hive suffix
+  ReadRegStr $R0 ${hive} "Software\Classes\${BUNDLEID}.${suffix}\shell\open\command" ""
+  ${If} $R0 == '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+    !if "${suffix}" == "torrent"
+      ReadRegStr $R1 ${hive} "Software\Classes\.torrent" ""
+      ${If} $R1 == "${BUNDLEID}.torrent"
+        DeleteRegValue ${hive} "Software\Classes\.torrent" ""
       ${EndIf}
-      DeleteRegKey HKCU "Software\Classes\CLSID\{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}\LocalServer32"
-      DeleteRegKey /ifempty HKCU "Software\Classes\CLSID\{70DF5A6D-E5B6-49FE-A8BC-9C904C2D609E}"
-    ${EndIf}
+    !endif
+    DeleteRegKey ${hive} "Software\Classes\${BUNDLEID}.${suffix}"
+  ${EndIf}
+!macroend
+
+!macro RAYBURST_REMOVE_CAPABILITIES hive
+  !insertmacro RAYBURST_REMOVE_CANDIDATE ${hive} torrent
+  !insertmacro RAYBURST_REMOVE_CANDIDATE ${hive} magnet
+  !insertmacro RAYBURST_REMOVE_CANDIDATE ${hive} ed2k
+  !insertmacro RAYBURST_REMOVE_CANDIDATE ${hive} thunder
+  !insertmacro RAYBURST_REMOVE_CANDIDATE ${hive} rayburst
+  ReadRegStr $R0 ${hive} "Software\${BUNDLEID}\Capabilities" "ApplicationIcon"
+  ${If} $R0 == '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+    DeleteRegKey ${hive} "Software\${BUNDLEID}\Capabilities"
+    DeleteRegValue ${hive} "Software\RegisteredApplications" "${BUNDLEID}"
+  ${EndIf}
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro RAYBURST_PREPARE_INSTALL
+  !insertmacro RAYBURST_REMOVE_PROTOCOL rayburst
+  !insertmacro RAYBURST_REMOVE_PROTOCOL magnet
+  !insertmacro RAYBURST_REMOVE_PROTOCOL ed2k
+  !insertmacro RAYBURST_REMOVE_PROTOCOL thunder
+  !insertmacro RAYBURST_REMOVE_CAPABILITIES SHCTX
+  !insertmacro RAYBURST_REMOVE_CAPABILITIES HKCU
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  ; Remove only registrations that still belong to this installation.
+  ReadRegStr $R0 SHCTX \
+    "Software\Google\Chrome\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" ""
+  ${If} $R0 == "$INSTDIR\native-messaging\manifests\chromium.json"
+    DeleteRegKey SHCTX \
+      "Software\Google\Chrome\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser"
+  ${EndIf}
+  ReadRegStr $R0 SHCTX \
+    "Software\Microsoft\Edge\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" ""
+  ${If} $R0 == "$INSTDIR\native-messaging\manifests\chromium.json"
+    DeleteRegKey SHCTX \
+      "Software\Microsoft\Edge\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser"
+  ${EndIf}
+  ReadRegStr $R0 SHCTX \
+    "Software\Mozilla\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" ""
+  ${If} $R0 == "$INSTDIR\native-messaging\manifests\firefox.json"
+    DeleteRegKey SHCTX \
+      "Software\Mozilla\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser"
+  ${EndIf}
+
+  ; Runtime repair writes HKCU even for per-machine installs.
+  ReadRegStr $R0 HKCU \
+    "Software\Google\Chrome\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" ""
+  ${If} $R0 == "$INSTDIR\native-messaging\manifests\chromium.json"
+    DeleteRegKey HKCU \
+      "Software\Google\Chrome\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser"
+  ${EndIf}
+  ReadRegStr $R0 HKCU \
+    "Software\Microsoft\Edge\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" ""
+  ${If} $R0 == "$INSTDIR\native-messaging\manifests\chromium.json"
+    DeleteRegKey HKCU \
+      "Software\Microsoft\Edge\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser"
+  ${EndIf}
+  ReadRegStr $R0 HKCU \
+    "Software\Mozilla\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser" ""
+  ${If} $R0 == "$INSTDIR\native-messaging\manifests\firefox.json"
+    DeleteRegKey HKCU \
+      "Software\Mozilla\NativeMessagingHosts\dev.aninsomniacy.rayburst.browser"
   ${EndIf}
 !macroend

@@ -5,14 +5,8 @@
  * notifications/automation, and auto-cleanup. This is the core download
  * experience tab — most fields map to aria2 engine options.
  */
-import type { AppConfig, FileCategory } from '@shared/types'
-import {
-  DEFAULT_APP_CONFIG as D,
-  buildDefaultCategories,
-  BUILTIN_CATEGORY_LABELS,
-  BUILTIN_CATEGORY_TEMPLATES,
-  COMPLETED_RECORD_RETENTION_OPTIONS,
-} from '@shared/constants'
+import type { AppConfig, FileCategory, FileDeletionMode } from '@shared/types'
+import { DEFAULT_APP_CONFIG as D, buildDefaultCategories, COMPLETED_RECORD_RETENTION_OPTIONS } from '@shared/constants'
 import { normalizeFileCategory } from '@shared/utils/fileCategory'
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -20,11 +14,15 @@ import { normalizeFileCategory } from '@shared/utils/fileCategory'
 export interface DownloadsForm {
   [key: string]: unknown
   dir: string
+  rememberSaveLocation: boolean
+  streamMaxRangeSize: string
   fileCategoryEnabled: boolean
   fileCategories: FileCategory[]
   maxConcurrentDownloads: number
-  split: number
-  maxConnectionPerServer: number
+  streamMaxConnections: number
+  sharingMode: 'stop-by-condition' | 'manual-stop'
+  shareRatio: number
+  shareTime: number
   continue: boolean
   maxTries: number
   retryWait: number
@@ -35,8 +33,11 @@ export interface DownloadsForm {
   speedScheduleFrom: string
   speedScheduleTo: string
   speedScheduleDays: number
+  mediaSelectBeforeDownload: boolean
+  mediaDefaultFormat: 'mp4' | 'mkv'
   newTaskShowDownloading: boolean
   noConfirmBeforeDeleteTask: boolean
+  fileDeletionMode: FileDeletionMode
   deleteFilesWhenSkipConfirm: boolean
   taskNotification: boolean
   notifyOnStart: boolean
@@ -51,33 +52,6 @@ export interface DownloadsForm {
   completedRecordRetentionDays: number
 }
 
-// ── Internals ───────────────────────────────────────────────────────
-
-/**
- * Hydrates categories loaded from persisted config with missing fields.
- * - `builtIn`: inferred from label matching against BUILTIN_CATEGORY_TEMPLATES
- * - `directory`: filled from baseDir + template subdirName (built-in) or baseDir (custom)
- * Empty directories would cause aria2 to fail, so this is safety-critical.
- */
-function hydrateCategories(categories: FileCategory[], baseDir: string): FileCategory[] {
-  const normalizedBase = baseDir.replace(/\\/g, '/').replace(/\/+$/, '')
-  const templateMap: ReadonlyMap<string, string> = new Map(
-    BUILTIN_CATEGORY_TEMPLATES.map((t) => [t.label, t.subdirName]),
-  )
-
-  return categories
-    .map((cat) => {
-      const isBuiltIn = cat.builtIn ?? BUILTIN_CATEGORY_LABELS.has(cat.label)
-      let directory = cat.directory
-      if (!directory) {
-        const subdirName = templateMap.get(cat.label)
-        directory = subdirName ? `${normalizedBase}/${subdirName}` : normalizedBase
-      }
-      return { ...cat, builtIn: isBuiltIn, directory }
-    })
-    .map(normalizeFileCategory)
-}
-
 // ── Pure Functions ──────────────────────────────────────────────────
 
 /**
@@ -87,14 +61,18 @@ function hydrateCategories(categories: FileCategory[], baseDir: string): FileCat
 export function buildDownloadsForm(config: AppConfig, defaultDir: string = ''): DownloadsForm {
   return {
     dir: config.dir || defaultDir,
+    rememberSaveLocation: config.rememberSaveLocation ?? D.rememberSaveLocation,
+    streamMaxRangeSize: config.streamMaxRangeSize ?? D.streamMaxRangeSize,
     fileCategoryEnabled: config.fileCategoryEnabled ?? D.fileCategoryEnabled,
     fileCategories:
       config.fileCategories && config.fileCategories.length > 0
-        ? hydrateCategories(config.fileCategories, config.dir || defaultDir)
-        : buildDefaultCategories(config.dir || defaultDir),
+        ? config.fileCategories.map(normalizeFileCategory)
+        : buildDefaultCategories(),
     maxConcurrentDownloads: config.maxConcurrentDownloads ?? D.maxConcurrentDownloads,
-    split: config.split ?? D.split,
-    maxConnectionPerServer: config.maxConnectionPerServer ?? D.maxConnectionPerServer,
+    streamMaxConnections: config.streamMaxConnections ?? D.streamMaxConnections,
+    sharingMode: (config.keepSharing ?? D.keepSharing) ? 'manual-stop' : 'stop-by-condition',
+    shareRatio: config.shareRatio ?? D.shareRatio,
+    shareTime: config.shareTime ?? D.shareTime,
     continue: config.continue ?? D.continue,
     maxTries: config.maxTries ?? D.maxTries,
     retryWait: config.retryWait ?? D.retryWait,
@@ -105,8 +83,11 @@ export function buildDownloadsForm(config: AppConfig, defaultDir: string = ''): 
     speedScheduleFrom: config.speedScheduleFrom ?? D.speedScheduleFrom,
     speedScheduleTo: config.speedScheduleTo ?? D.speedScheduleTo,
     speedScheduleDays: config.speedScheduleDays ?? D.speedScheduleDays,
+    mediaSelectBeforeDownload: config.mediaSelectBeforeDownload ?? D.mediaSelectBeforeDownload,
+    mediaDefaultFormat: config.mediaDefaultFormat ?? D.mediaDefaultFormat,
     newTaskShowDownloading: config.newTaskShowDownloading ?? D.newTaskShowDownloading,
     noConfirmBeforeDeleteTask: config.noConfirmBeforeDeleteTask ?? D.noConfirmBeforeDeleteTask,
+    fileDeletionMode: config.fileDeletionMode ?? D.fileDeletionMode,
     deleteFilesWhenSkipConfirm: config.deleteFilesWhenSkipConfirm ?? D.deleteFilesWhenSkipConfirm,
     taskNotification: config.taskNotification ?? D.taskNotification,
     notifyOnStart: config.notifyOnStart ?? D.notifyOnStart,
@@ -129,37 +110,40 @@ export function buildDownloadsForm(config: AppConfig, defaultDir: string = ''): 
  * are excluded.
  */
 export function buildDownloadsSystemConfig(f: DownloadsForm): Record<string, string> {
+  const keepSharing = f.sharingMode === 'manual-stop'
   return {
     dir: f.dir,
+    'stream-max-range-size': f.streamMaxRangeSize,
     'max-concurrent-downloads': String(f.maxConcurrentDownloads),
-    'max-connection-per-server': String(f.maxConnectionPerServer),
-    split: String(f.split),
+    'stream-max-connections': String(f.streamMaxConnections),
     'max-overall-download-limit': f.maxOverallDownloadLimit,
     'max-overall-upload-limit': f.maxOverallUploadLimit,
     continue: String(f.continue !== false),
     'remote-time': String(!!f.remoteTime),
     'max-tries': String(f.maxTries),
     'retry-wait': String(f.retryWait),
+    'seed-ratio': keepSharing ? '0' : String(f.shareRatio),
+    'seed-time': keepSharing ? '' : String(f.shareTime),
+    'keep-sharing': String(keepSharing),
   }
 }
 
 /**
  * Transforms the downloads form for store persistence.
  * Handles the fileCategories auto-populate guard.
- * Since v2, split and maxConnectionPerServer are persisted independently.
  */
 export function transformDownloadsForStore(f: DownloadsForm): Partial<AppConfig> {
   const data = { ...f } as Partial<AppConfig> & Record<string, unknown>
+  delete data.sharingMode
+  data.keepSharing = f.sharingMode === 'manual-stop'
 
   // Guard: auto-populate default categories when classification is enabled but
   // the categories array is empty (edge case from GitHub issue #229).
   if (f.fileCategoryEnabled && (!f.fileCategories || f.fileCategories.length === 0)) {
-    data.fileCategories = buildDefaultCategories(f.dir)
+    data.fileCategories = buildDefaultCategories()
   } else {
     data.fileCategories = f.fileCategories.map(normalizeFileCategory)
   }
-
-  data.split = f.split
 
   return data
 }

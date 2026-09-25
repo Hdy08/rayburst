@@ -1,24 +1,19 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core'
 /** @fileoverview Downloads preference tab: paths, concurrency, speed limits, notifications, cleanup. */
-import { ref, computed, h, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePreferenceStore } from '@/stores/preference'
 import { usePreferenceForm } from '@/composables/usePreferenceForm'
-import { useEngineRestart } from '@/composables/useEngineRestart'
+import { usePreferenceNumericValidation } from '@/composables/usePreferenceNumericValidation'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { extractSpeedUnit } from '@shared/utils'
 import { logger } from '@shared/logger'
+import { getErrorMessage } from '@shared/utils/errorMessage'
 import { resolveUserVisibleDownloadDir } from '@shared/utils/userVisibleDirectory'
 import { toggleSpeedLimit } from '@/composables/useSpeedLimiter'
 import { changeGlobalOption, isEngineReady } from '@/api/aria2'
-import {
-  ENGINE_RPC_PORT,
-  ENGINE_MAX_CONCURRENT_DOWNLOADS,
-  ENGINE_MAX_CONNECTION_PER_SERVER,
-  SAFE_LIMIT_SPLIT,
-  SAFE_LIMIT_CONNECTION_PER_SERVER,
-  SCHEDULE_DAY,
-} from '@shared/constants'
+import { SCHEDULE_DAY } from '@shared/constants'
 import { useAppMessage } from '@/composables/useAppMessage'
 import {
   buildDownloadsForm,
@@ -42,9 +37,10 @@ import {
   NText,
   NCollapseTransition,
   NIcon,
-  useDialog,
+  NRadioButton,
+  NRadioGroup,
 } from 'naive-ui'
-import PreferenceActionBar from './PreferenceActionBar.vue'
+import PreferenceActionRegistration from './PreferenceActionRegistration.vue'
 import PreferenceCheckboxGrid from './PreferenceCheckboxGrid.vue'
 import PreferenceHintLabel from './PreferenceHintLabel.vue'
 import DirectoryPopover from '@/components/common/DirectoryPopover.vue'
@@ -53,8 +49,8 @@ import { FolderOpenOutline } from '@vicons/ionicons5'
 
 const { t } = useI18n()
 const preferenceStore = usePreferenceStore()
-const dialog = useDialog()
 const message = useAppMessage()
+const { constraint, configFieldProps, fieldProps, areConfigFieldsValid } = usePreferenceNumericValidation()
 const defaultDownloadDir = ref('')
 
 // ── File timestamp strategy ─────────────────────────────────────────
@@ -69,57 +65,18 @@ function handleFileTimestampChange(val: string) {
   form.value.remoteTime = val === FILE_TS_SERVER
 }
 
-// ── Safe-limit warning ──────────────────────────────────────────────
-const safeLimits = [
-  {
-    field: 'split' as const,
-    safe: SAFE_LIMIT_SPLIT,
-    labelKey: 'preferences.split-count',
-    reasonKey: 'preferences.high-split-reason',
-  },
-  {
-    field: 'maxConnectionPerServer' as const,
-    safe: SAFE_LIMIT_CONNECTION_PER_SERVER,
-    labelKey: 'preferences.max-connection-per-server',
-    reasonKey: 'preferences.high-connection-reason',
-  },
-]
+const fileDeletionModeOptions = computed(() => [
+  { label: t('preferences.file-deletion-mode-trash'), value: 'trash' },
+  { label: t('preferences.file-deletion-mode-permanent'), value: 'permanent' },
+])
 
-function buildSafeLimitContent(f: Record<string, unknown>, exceeded: typeof safeLimits) {
-  return h(
-    'div',
-    { style: 'display: flex; flex-direction: column; gap: 12px' },
-    exceeded.map((e) => {
-      const current = f[e.field] as number
-      return h('div', [
-        h(
-          'div',
-          { style: 'font-weight: 500' },
-          `• ${t(e.labelKey)}: ${current} (${t('preferences.recommended-limit', { value: e.safe })})`,
-        ),
-        h('div', { style: 'padding-left: 14px; opacity: 0.75' }, t(e.reasonKey)),
-      ])
-    }),
-  )
-}
-
-function confirmSafeLimits(f: Record<string, unknown>, exceeded: typeof safeLimits): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const revert = () => {
-      for (const e of exceeded) f[e.field] = e.safe
-      resolve(false)
-    }
-    dialog.warning({
-      title: t('preferences.safe-limit-warning-title'),
-      content: () => buildSafeLimitContent(f, exceeded),
-      positiveText: t('preferences.high-connection-continue'),
-      negativeText: t('app.cancel'),
-      onPositiveClick: () => resolve(true),
-      onNegativeClick: revert,
-      onClose: revert,
-    })
-  })
-}
+const skipConfirmationFileLabel = computed(() =>
+  t(
+    form.value.fileDeletionMode === 'permanent'
+      ? 'preferences.delete-files-when-skip-confirm-permanent'
+      : 'preferences.delete-files-when-skip-confirm-trash',
+  ),
+)
 
 function buildForm() {
   return buildDownloadsForm(preferenceStore.config, defaultDownloadDir.value)
@@ -130,15 +87,13 @@ const { form, isDirty, handleSave, handleReset, resetSnapshot, patchSnapshot } =
   buildSystemConfig: buildDownloadsSystemConfig,
   transformForStore: transformDownloadsForStore,
   beforeSave: async (f) => {
-    const exceeded = safeLimits.filter((e) => {
-      const v = f[e.field as string]
-      return typeof v === 'number' && v > e.safe
-    })
-    if (exceeded.length > 0) {
-      const ok = await confirmSafeLimits(f, exceeded)
-      if (!ok) return false
+    try {
+      await invoke('validate_file_categories', { categories: f.fileCategories, baseDir: f.dir })
+      return true
+    } catch (error) {
+      message.error(getErrorMessage(error))
+      return false
     }
-    return true
   },
   afterSave: (f) => {
     recordDownloadsDirectory(f, preferenceStore.recordHistoryDirectory)
@@ -204,6 +159,20 @@ const selectedNotificationTypes = computed<string[]>({
     form.value.notifyOnComplete = selected.has('complete')
   },
 })
+const numericFieldsValid = computed(
+  () =>
+    areConfigFieldsValid({
+      maxConcurrentDownloads: form.value.maxConcurrentDownloads,
+      streamMaxConnections: form.value.streamMaxConnections,
+      maxTries: form.value.maxTries,
+      retryWait: form.value.retryWait,
+      shareRatio: form.value.shareRatio,
+      shareTime: form.value.shareTime,
+      completedRecordRetentionDays: form.value.completedRecordRetentionDays,
+    }) &&
+    (completedRecordRetentionSelectValue.value !== -1 ||
+      !fieldProps(form.value.completedRecordRetentionDays, { min: 1, max: 3650, integer: true }).validationStatus),
+)
 
 function parseSpeedLimit(value: unknown) {
   const str = String(value || '0')
@@ -297,27 +266,6 @@ function loadForm() {
   downloadUnit.value = dl.unit
 }
 
-const { restartEngine } = useEngineRestart()
-function handleManualRestart() {
-  const port = (preferenceStore.config.rpcListenPort as number) || ENGINE_RPC_PORT
-  const secret = (preferenceStore.config.rpcSecret as string) || ''
-  const d = dialog.info({
-    title: t('preferences.engine-restart-title'),
-    content: t('preferences.engine-restart-manual-confirm'),
-    positiveText: t('preferences.engine-restart-now'),
-    negativeText: t('preferences.engine-restart-later'),
-    maskClosable: false,
-    onPositiveClick: async () => {
-      d.loading = true
-      d.negativeText = ''
-      d.closable = false
-      message.info(t('preferences.engine-restarting'))
-      await new Promise((r) => requestAnimationFrame(r))
-      await restartEngine({ port, secret })
-    },
-  })
-}
-
 onMounted(async () => {
   try {
     const resolvedDir = await resolveUserVisibleDownloadDir({ configuredDir: preferenceStore.config.dir })
@@ -335,43 +283,108 @@ onMounted(async () => {
   <div class="preference-form-wrapper">
     <div class="preference-form-scroll">
       <NForm label-placement="left" label-align="left" label-width="260px" size="small" class="form-preference">
-        <!-- Concurrency & Segments -->
-        <NDivider title-placement="left">{{ t('preferences.concurrency-and-segments') }}</NDivider>
-        <NFormItem :label="t('preferences.max-concurrent-downloads')">
+        <NDivider title-placement="left">{{ t('preferences.media-downloads') }}</NDivider>
+        <NFormItem :label="t('preferences.media-select-before-download')">
+          <NSwitch v-model:value="form.mediaSelectBeforeDownload" />
+        </NFormItem>
+        <NFormItem :label="t('preferences.media-default-format')">
+          <NSelect
+            v-model:value="form.mediaDefaultFormat"
+            :options="[
+              { label: 'MP4', value: 'mp4' },
+              { label: 'MKV', value: 'mkv' },
+            ]"
+            class="pref-control-auto"
+          />
+        </NFormItem>
+        <NDivider title-placement="left">{{ t('preferences.download-concurrency') }}</NDivider>
+        <NFormItem
+          :label="t('preferences.max-concurrent-downloads')"
+          v-bind="configFieldProps('maxConcurrentDownloads', form.maxConcurrentDownloads)"
+        >
           <NInputNumber
             v-model:value="form.maxConcurrentDownloads"
-            :min="1"
-            :max="ENGINE_MAX_CONCURRENT_DOWNLOADS"
+            :min="constraint('maxConcurrentDownloads').min"
+            :max="constraint('maxConcurrentDownloads').max"
             class="pref-number"
           />
         </NFormItem>
-        <NFormItem :label="t('preferences.split-count')">
+        <NFormItem
+          :label="t('preferences.stream-max-connections')"
+          v-bind="configFieldProps('streamMaxConnections', form.streamMaxConnections)"
+        >
           <NInputNumber
-            v-model:value="form.split"
-            :min="1"
-            :max="ENGINE_MAX_CONNECTION_PER_SERVER"
+            v-model:value="form.streamMaxConnections"
+            :min="constraint('streamMaxConnections').min"
+            :max="constraint('streamMaxConnections').max"
             class="pref-number"
           />
         </NFormItem>
-        <NFormItem :label="t('preferences.max-connection-per-server')">
-          <NInputNumber
-            v-model:value="form.maxConnectionPerServer"
-            :min="1"
-            :max="ENGINE_MAX_CONNECTION_PER_SERVER"
-            class="pref-number"
-          />
+        <NDivider title-placement="left">{{ t('preferences.p2p-sharing-section') }}</NDivider>
+        <NFormItem :label="t('preferences.sharing-mode')">
+          <NRadioGroup v-model:value="form.sharingMode" size="small">
+            <NRadioButton value="stop-by-condition">
+              {{ t('preferences.sharing-mode-stop-by-condition') }}
+            </NRadioButton>
+            <NRadioButton value="manual-stop">{{ t('preferences.sharing-mode-manual-stop') }}</NRadioButton>
+          </NRadioGroup>
         </NFormItem>
+        <NCollapseTransition :show="form.sharingMode === 'stop-by-condition'" class="collapse-indent">
+          <NFormItem :label="t('preferences.share-ratio')" v-bind="configFieldProps('shareRatio', form.shareRatio)">
+            <NInputNumber
+              v-model:value="form.shareRatio"
+              :min="constraint('shareRatio').min"
+              :max="constraint('shareRatio').max"
+              :step="0.1"
+              class="pref-number"
+            />
+          </NFormItem>
+          <NFormItem
+            :label="t('preferences.share-time') + ' (' + t('preferences.share-time-unit') + ')'"
+            v-bind="configFieldProps('shareTime', form.shareTime)"
+          >
+            <NInputNumber
+              v-model:value="form.shareTime"
+              :min="constraint('shareTime').min"
+              :max="constraint('shareTime').max"
+              class="pref-number"
+            />
+          </NFormItem>
+        </NCollapseTransition>
+        <NCollapseTransition :show="form.sharingMode === 'manual-stop'" class="collapse-indent">
+          <NFormItem label=" ">
+            <NText depth="3">{{ t('preferences.sharing-mode-manual-stop-tips') }}</NText>
+          </NFormItem>
+        </NCollapseTransition>
         <!-- Retry & File Options -->
         <NDivider title-placement="left">{{ t('preferences.retry-and-file-behavior') }}</NDivider>
-        <NFormItem :label="t('preferences.max-tries')">
-          <NInputNumber v-model:value="form.maxTries" :min="0" :max="60" class="pref-number" />
+        <NFormItem :label="t('preferences.max-tries')" v-bind="configFieldProps('maxTries', form.maxTries)">
+          <NInputNumber
+            v-model:value="form.maxTries"
+            :min="constraint('maxTries').min"
+            :max="constraint('maxTries').max"
+            class="pref-number"
+          />
           <NText depth="3" class="pref-inline-note">
             {{ t('preferences.max-tries-hint') }}
           </NText>
         </NFormItem>
-        <NFormItem :label="t('preferences.retry-wait')">
-          <NInputNumber v-model:value="form.retryWait" :min="0" :max="600" class="pref-number" />
+        <NFormItem :label="t('preferences.retry-wait')" v-bind="configFieldProps('retryWait', form.retryWait)">
+          <NInputNumber
+            v-model:value="form.retryWait"
+            :min="constraint('retryWait').min"
+            :max="constraint('retryWait').max"
+            class="pref-number"
+          />
           <NText depth="3" class="pref-inline-note">{{ t('preferences.unit-seconds') }}</NText>
+        </NFormItem>
+        <NFormItem>
+          <template #label
+            ><PreferenceHintLabel
+              :label="t('preferences.stream-max-range-size')"
+              :hint="t('preferences.stream-max-range-size-hint')"
+          /></template>
+          <NInput v-model:value="form.streamMaxRangeSize" class="pref-control-auto" placeholder="0" />
         </NFormItem>
         <NFormItem :label="t('preferences.continue')">
           <NSwitch v-model:value="form.continue" />
@@ -390,6 +403,9 @@ onMounted(async () => {
             <DirectoryPopover @select="handleRecentDirSelect" />
           </NInputGroup>
         </NFormItem>
+        <NFormItem :label="t('preferences.remember-save-location')">
+          <NSwitch v-model:value="form.rememberSaveLocation" />
+        </NFormItem>
         <NFormItem :label="t('preferences.file-timestamp')">
           <NSelect
             :value="fileTimestampValue"
@@ -407,19 +423,17 @@ onMounted(async () => {
           </template>
           <NSwitch v-model:value="form.fileCategoryEnabled" />
         </NFormItem>
-        <NCollapseTransition :show="form.fileCategoryEnabled">
-          <NFormItem :show-label="false">
-            <div class="file-category-summary-row">
-              <div class="file-category-summary-text">
-                <span>{{ categorySummary }}</span>
-                <NText depth="3">{{ t('preferences.file-category-manager-hint') }}</NText>
-              </div>
-              <NButton size="small" @click="showCategoryManager = true">
-                {{ t('preferences.file-category-manage') }}
-              </NButton>
+        <NFormItem :show-label="false">
+          <div class="file-category-summary-row">
+            <div class="file-category-summary-text">
+              <span>{{ categorySummary }}</span>
+              <NText depth="3">{{ t('preferences.file-category-manager-hint') }}</NText>
             </div>
-          </NFormItem>
-        </NCollapseTransition>
+            <NButton size="small" @click="showCategoryManager = true">
+              {{ t('preferences.file-category-manage') }}
+            </NButton>
+          </div>
+        </NFormItem>
 
         <!-- Speed Limit -->
         <NDivider title-placement="left">{{ t('preferences.speed-limit') }}</NDivider>
@@ -497,13 +511,16 @@ onMounted(async () => {
         <NFormItem :label="t('preferences.new-task-show-downloading')">
           <NSwitch v-model:value="form.newTaskShowDownloading" />
         </NFormItem>
+        <NFormItem :label="t('preferences.file-deletion-mode')">
+          <NSelect v-model:value="form.fileDeletionMode" :options="fileDeletionModeOptions" class="pref-control-auto" />
+        </NFormItem>
         <NFormItem :label="t('preferences.no-confirm-before-delete-task')">
           <NSwitch v-model:value="form.noConfirmBeforeDeleteTask" />
         </NFormItem>
         <NCollapseTransition :show="form.noConfirmBeforeDeleteTask">
           <NFormItem label=" ">
             <NCheckbox v-model:checked="form.deleteFilesWhenSkipConfirm">
-              {{ t('preferences.delete-files-when-skip-confirm') }}
+              {{ skipConfirmationFileLabel }}
             </NCheckbox>
           </NFormItem>
         </NCollapseTransition>
@@ -546,7 +563,10 @@ onMounted(async () => {
           />
         </NFormItem>
         <NCollapseTransition :show="completedRecordRetentionSelectValue === -1">
-          <NFormItem :label="t('preferences.completed-record-retention-custom-days')">
+          <NFormItem
+            :label="t('preferences.completed-record-retention-custom-days')"
+            v-bind="fieldProps(form.completedRecordRetentionDays, { min: 1, max: 3650, integer: true })"
+          >
             <NInputNumber v-model:value="form.completedRecordRetentionDays" :min="1" :max="3650" class="pref-number" />
             <NText depth="3" class="pref-inline-note">
               {{ t('preferences.completed-record-retention-days-unit') }}
@@ -555,7 +575,12 @@ onMounted(async () => {
         </NCollapseTransition>
       </NForm>
     </div>
-    <PreferenceActionBar :is-dirty="isDirty" @save="handleSave" @discard="handleReset" @restart="handleManualRestart" />
+    <PreferenceActionRegistration
+      :is-dirty="isDirty"
+      :is-valid="numericFieldsValid"
+      @save="handleSave"
+      @discard="handleReset"
+    />
     <FileCategoryManager
       v-model:show="showCategoryManager"
       :categories="form.fileCategories"

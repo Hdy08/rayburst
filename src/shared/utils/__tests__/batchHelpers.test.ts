@@ -1,17 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   createBatchItem,
   detectExternalInputKind,
   detectKind,
   extractMagnetDisplayName,
-  mergeUriLines,
   mergeRawUriLines,
   normalizeUriLines,
-  resetBatchIdCounter,
   decodePathSegment,
   extractDecodedFilename,
-  sanitizeAria2OutHint,
-  resolveExternalFilenameHint,
   parseAria2Input,
 } from '../batchHelpers'
 
@@ -76,9 +72,9 @@ describe('normalizeUriLines', () => {
     expect(normalizeUriLines(long)).toEqual([long])
   })
 
-  it('does NOT convert 64-char hex (SHA-256/BT v2 — unsupported by aria2)', () => {
+  it('converts a bare BitTorrent v2 hash', () => {
     const sha256 = 'aabbccddee00112233445566778899aabbccddee00112233445566778899aabb'
-    expect(normalizeUriLines(sha256)).toEqual([sha256])
+    expect(normalizeUriLines(sha256)).toEqual([`magnet:?xt=urn:btmh:1220${sha256}`])
   })
 
   it('does not touch already-prefixed magnet URIs', () => {
@@ -162,54 +158,6 @@ describe('parseAria2Input', () => {
   })
 })
 
-describe('mergeUriLines', () => {
-  it('merges existing textarea content with incoming uri payloads and deduplicates per line', () => {
-    const merged = mergeUriLines('https://a.example/file\nhttps://b.example/file', [
-      'https://b.example/file',
-      'https://c.example/file',
-      'https://a.example/file\nhttps://d.example/file',
-    ])
-
-    expect(merged).toBe(
-      ['https://a.example/file', 'https://b.example/file', 'https://c.example/file', 'https://d.example/file'].join(
-        '\n',
-      ),
-    )
-  })
-
-  it('treats multiline incoming payloads as independent uri lines instead of one opaque blob', () => {
-    const merged = mergeUriLines('https://a.example/file', ['https://b.example/file\nhttps://c.example/file'])
-
-    expect(merged).toBe(['https://a.example/file', 'https://b.example/file', 'https://c.example/file'].join('\n'))
-  })
-
-  it('returns normalized existing content when incoming payloads are empty or duplicates', () => {
-    const merged = mergeUriLines(' https://a.example/file \n\nhttps://a.example/file ', [
-      '',
-      'https://a.example/file',
-      '   ',
-    ])
-
-    expect(merged).toBe('https://a.example/file')
-  })
-
-  it('normalizes bare info hashes in incoming payloads before deduping and merging', () => {
-    const hash = 'd8988e034cb5de79d319242e3365bf30a7741a6e'
-    const merged = mergeUriLines(`magnet:?xt=urn:btih:${hash}`, [hash, 'TCIY4A2MWXPHTUYZEQUOMNS7GCDXOQTG'])
-
-    expect(merged).toBe(
-      [`magnet:?xt=urn:btih:${hash}`, 'magnet:?xt=urn:btih:TCIY4A2MWXPHTUYZEQUOMNS7GCDXOQTG'].join('\n'),
-    )
-  })
-
-  it('keeps Thunder links wrapped when merging incoming payloads', () => {
-    const thunder = 'thunder://' + btoa('AAhttps://example.com/file.zipZZ')
-    const merged = mergeUriLines('', [thunder])
-
-    expect(merged).toBe(thunder)
-  })
-})
-
 describe('mergeRawUriLines', () => {
   it('keeps Thunder links raw while still trimming blanks and deduplicating exact lines', () => {
     const thunder = 'thunder://' + btoa('AAhttps://example.com/file.zipZZ')
@@ -271,8 +219,8 @@ describe('detectKind', () => {
     expect(detectKind('https://example.com/file.zip')).toBe('uri')
   })
 
-  it('classifies FTP URLs with .torrent as uri', () => {
-    expect(detectKind('ftp://mirror.example.com/pub/file.torrent')).toBe('uri')
+  it('classifies SFTP URLs with .torrent as uri', () => {
+    expect(detectKind('sftp://mirror.example.com/pub/file.torrent')).toBe('uri')
   })
 
   // ── 3. Local file paths ───────────────────────────────────────────
@@ -330,20 +278,15 @@ describe('extractMagnetDisplayName', () => {
 })
 
 describe('createBatchItem', () => {
-  beforeEach(() => {
-    resetBatchIdCounter()
-  })
-
   it('uses source as payload for uri items', () => {
     const item = createBatchItem('uri', 'magnet:?xt=urn:btih:abc')
     expect(item.payload).toBe('magnet:?xt=urn:btih:abc')
   })
 
-  it('creates stable sequential ids for deterministic tests', () => {
+  it('assigns distinct IDs to separate items', () => {
     const a = createBatchItem('uri', 'https://a.example/file')
     const b = createBatchItem('uri', 'https://b.example/file')
-    expect(a.id).toBe('batch-1')
-    expect(b.id).toBe('batch-2')
+    expect(a.id).not.toBe(b.id)
   })
 })
 
@@ -439,8 +382,8 @@ describe('extractDecodedFilename', () => {
     expect(extractDecodedFilename('http://example.com/bad%ZZname.txt')).toBe('bad%ZZname.txt')
   })
 
-  it('handles FTP URIs', () => {
-    expect(extractDecodedFilename('ftp://ftp.example.com/pub/file%20name.tar.gz')).toBe('file name.tar.gz')
+  it('handles SFTP URIs', () => {
+    expect(extractDecodedFilename('sftp://files.example.com/pub/file%20name.tar.gz')).toBe('file name.tar.gz')
   })
 
   it('returns empty string for blob URIs', () => {
@@ -479,174 +422,3 @@ describe('extractDecodedFilename', () => {
 // ── sanitizeAria2OutHint ─────────────────────────────────────────────
 // Pure filesystem safety — no business logic. Any out value (user-typed
 // or extension-provided) is safe to pass through this function.
-
-describe('sanitizeAria2OutHint', () => {
-  it('returns clean filename unchanged', () => {
-    expect(sanitizeAria2OutHint('file.zip')).toBe('file.zip')
-  })
-
-  it('strips path prefixes (basename extraction)', () => {
-    expect(sanitizeAria2OutHint('/home/user/Downloads/file.zip')).toBe('file.zip')
-    expect(sanitizeAria2OutHint('C:\\Users\\Downloads\\file.zip')).toBe('file.zip')
-  })
-
-  it('strips query string pollution from extension filenames', () => {
-    expect(sanitizeAria2OutHint('photo.jpg?token=abc')).toBe('photo.jpg')
-  })
-
-  it('strips fragment pollution', () => {
-    expect(sanitizeAria2OutHint('file.pdf#page=3')).toBe('file.pdf')
-  })
-
-  it('replaces filesystem-unsafe characters with underscores', () => {
-    expect(sanitizeAria2OutHint('a:b*c.jpg')).toBe('a_b_c.jpg')
-    expect(sanitizeAria2OutHint('what?.jpg')).toBe('what_.jpg')
-    expect(sanitizeAria2OutHint('file<>name.txt')).toBe('file__name.txt')
-  })
-
-  it('does not drop HEAD-resolved names that start with replacement question marks', () => {
-    expect(sanitizeAria2OutHint('????? ??? 2026.xlsx')).toBe('_____ ___ 2026.xlsx')
-  })
-
-  it('decodes RFC 2047 encoded-word filenames before filesystem sanitization', () => {
-    expect(sanitizeAria2OutHint('=?UTF-8?B?0JjQotCe0JPQmCDQm9CU0KMgMjAyNi54bHN4?=')).toBe('ИТОГИ ЛДУ 2026.xlsx')
-  })
-
-  it('decodes percent-encoded RFC 2047 filenames before filesystem sanitization', () => {
-    expect(sanitizeAria2OutHint('=%3FUTF-8%3FB%3F0JjQotCe0JPQmCDQm9CU0KMgMjAyNi54bHN4%3F=')).toBe('ИТОГИ ЛДУ 2026.xlsx')
-  })
-
-  it('decodes legacy percent-encoded UTF-8 filenames before filesystem sanitization', () => {
-    expect(
-      sanitizeAria2OutHint(
-        'K430006866701%20%20%20%20%2020251022%20%20%20ASKO%20%20%20%20CW5937GCN%20%20%20%20%20CW51237GCN%E8%AF%B4%E6%98%8E%E4%B9%A6%28%E6%96%B0%E5%9B%BD%E6%A0%87%29.pdf',
-      ),
-    ).toBe('K430006866701     20251022   ASKO    CW5937GCN     CW51237GCN说明书(新国标).pdf')
-  })
-
-  it('keeps percent-decoded slashes inside a single safe filename', () => {
-    expect(sanitizeAria2OutHint('safe%2Fevil.pdf')).toBe('safe_evil.pdf')
-  })
-
-  it('removes control characters', () => {
-    expect(sanitizeAria2OutHint('\x01\x02file.jpg')).toBe('file.jpg')
-  })
-
-  it('trims trailing dots and spaces', () => {
-    expect(sanitizeAria2OutHint('file.jpg...')).toBe('file.jpg')
-    expect(sanitizeAria2OutHint('file.jpg   ')).toBe('file.jpg')
-  })
-
-  it('preserves extensionless filenames', () => {
-    expect(sanitizeAria2OutHint('README')).toBe('README')
-    expect(sanitizeAria2OutHint('Makefile')).toBe('Makefile')
-  })
-
-  it('preserves accented filenames', () => {
-    expect(sanitizeAria2OutHint('résumé.pdf')).toBe('résumé.pdf')
-  })
-
-  it('returns empty for empty input', () => {
-    expect(sanitizeAria2OutHint('')).toBe('')
-  })
-
-  it('returns empty for pure dots', () => {
-    expect(sanitizeAria2OutHint('...')).toBe('')
-  })
-
-  it('returns empty for query-only strings', () => {
-    expect(sanitizeAria2OutHint('?format=jpg')).toBe('')
-  })
-})
-
-// ── resolveExternalFilenameHint ──────────────────────────────────────
-// Smart external hint validation: decides whether to trust the extension
-// filename or let resolve_filename HEAD take over.
-
-describe('resolveExternalFilenameHint', () => {
-  // ── Accept: hint has extension ─────────────────────────────────────
-
-  it('accepts cloud drive filename with extension', () => {
-    expect(resolveExternalFilenameHint('https://cdn.cloud.com/abc123', 'résumé.pdf')).toBe('résumé.pdf')
-  })
-
-  it('accepts RFC 2047 encoded-word external filename hints after decoding', () => {
-    expect(
-      resolveExternalFilenameHint(
-        'https://mail-attachment.googleusercontent.com/attachment/u/0/',
-        '=?UTF-8?B?0JjQotCe0JPQmCDQm9CU0KMgMjAyNi54bHN4?=',
-      ),
-    ).toBe('ИТОГИ ЛДУ 2026.xlsx')
-  })
-
-  it('accepts hint with extension even when it matches URL basename', () => {
-    expect(resolveExternalFilenameHint('https://example.com/photo.jpg', 'photo.jpg')).toBe('photo.jpg')
-  })
-
-  it('accepts hint after stripping query params and the result has extension', () => {
-    expect(resolveExternalFilenameHint('https://cdn.example.com/photo.jpg?token=1', 'photo.jpg?token=1')).toBe(
-      'photo.jpg',
-    )
-  })
-
-  it('accepts hint with illegal chars after sanitization if it has extension', () => {
-    // `?` stripped first as query boundary, then `:` and `*` replaced
-    expect(resolveExternalFilenameHint('https://example.com/file', 'a:b*c.jpg')).toBe('a_b_c.jpg')
-  })
-
-  // ── Reject: extensionless and same as URL basename ────────────────
-
-  it('rejects Twitter CDN filename (extensionless, matches URL basename)', () => {
-    expect(
-      resolveExternalFilenameHint(
-        'https://pbs.twimg.com/media/G9v9wWdasAYNqt9?format=jpg&name=large',
-        'G9v9wWdasAYNqt9?format=jpg&name=large',
-      ),
-    ).toBe('')
-  })
-
-  it('rejects extensionless hint that matches URL basename exactly', () => {
-    expect(resolveExternalFilenameHint('https://cdn.example.com/abc123', 'abc123')).toBe('')
-  })
-
-  it('rejects generic browser fallback filename without extension', () => {
-    expect(
-      resolveExternalFilenameHint('https://mail-attachment.googleusercontent.com/attachment/u/0/', 'download'),
-    ).toBe('')
-  })
-
-  it('rejects numeric browser placeholder filename for extensionless attachment URL', () => {
-    expect(resolveExternalFilenameHint('https://mail-attachment.googleusercontent.com/attachment/u/0/', '0.xlsx')).toBe(
-      '',
-    )
-  })
-
-  // ── Accept: extensionless but different from URL basename ─────────
-
-  it('accepts extensionless hint when different from URL basename (cloud drive real name)', () => {
-    expect(resolveExternalFilenameHint('https://cdn.cloud.com/randomhash', 'README')).toBe('README')
-  })
-
-  it('accepts extensionless hint when different from URL basename', () => {
-    expect(resolveExternalFilenameHint('https://cdn.example.com/abc123', 'Makefile')).toBe('Makefile')
-  })
-
-  // ── Edge cases ────────────────────────────────────────────────────
-
-  it('returns empty for empty hint', () => {
-    expect(resolveExternalFilenameHint('https://example.com/file', '')).toBe('')
-  })
-
-  it('returns empty for hint that sanitizes to empty', () => {
-    expect(resolveExternalFilenameHint('https://example.com/file', '?format=jpg')).toBe('')
-  })
-
-  it('returns empty for pure-dot hint', () => {
-    expect(resolveExternalFilenameHint('https://example.com/file', '...')).toBe('')
-  })
-
-  it('handles non-HTTP URLs gracefully', () => {
-    // magnet URI → extractDecodedFilename returns '' → comparison impossible → accept hint
-    expect(resolveExternalFilenameHint('magnet:?xt=urn:btih:abc', 'download.torrent')).toBe('download.torrent')
-  })
-})

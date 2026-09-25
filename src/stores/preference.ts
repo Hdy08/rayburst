@@ -9,9 +9,9 @@ import { activeLocale } from '@shared/utils/i18n'
 import { fetchBtTrackerFromSource } from '@shared/utils/tracker'
 import { DEFAULT_APP_CONFIG, MAX_NUM_OF_DIRECTORIES } from '@shared/constants'
 import { logger } from '@shared/logger'
-import { type MigrationResult } from '@shared/utils/configMigration'
 import { createDefaultAppConfig, hydrateAppConfig } from '@shared/utils/configHydration'
 import { recordRecentUserAgentProfileId } from '@shared/utils/userAgentPolicy'
+import { validateAppConfigCandidate } from '@shared/configConstraints'
 import type { AppConfig } from '@shared/types'
 
 const STORE_KEY = 'preferences'
@@ -22,20 +22,6 @@ export const usePreferenceStore = defineStore('preference', () => {
   /** Callback registered by the active preference page to save before navigation. */
   const saveBeforeLeave = ref<(() => Promise<void>) | null>(null)
   const config = ref<AppConfig>(createDefaultAppConfig())
-  /** Result from the last migration run (null = no migration attempted yet). */
-  const migrationResult = ref<MigrationResult | null>(null)
-  /** Set when DB schema upgrade is detected during loadPreference.
-   *  MainLayout watches this to show an info toast. Null = no upgrade detected. */
-  const dbUpgradeVersion = ref<number | null>(null)
-
-  // ── Deferred migration signals ──────────────────────────────────────
-  // loadPreference() runs before setI18nLocale(), so setting these refs
-  // immediately would trigger MainLayout watchers while the locale is
-  // still 'en-US' — causing migration toasts to always display in English.
-  // Solution: buffer the values and flush them after locale is ready.
-  let pendingMigrationResult: MigrationResult | null = null
-  let pendingDbUpgradeVersion: number | null = null
-
   const theme = computed(() => config.value.theme)
   const locale = computed(() => config.value.locale)
 
@@ -64,29 +50,11 @@ export const usePreferenceStore = defineStore('preference', () => {
       const store = await getStore()
       const saved = await store.get<Partial<AppConfig>>(STORE_KEY)
       if (saved && !isEmpty(saved)) {
-        // Backfill dbSchemaVersion for existing users upgrading to a version
-        // that includes this field. saved being non-empty proves this is NOT
-        // a fresh install — fresh installs have empty config.json and take
-        // the DEFAULT_APP_CONFIG path (which already has the current DB version).
-        if (saved.dbSchemaVersion === undefined) {
-          saved.dbSchemaVersion = 1
-        }
-        // Always signal the saved version so the MainLayout watch can
-        // compare it against the live DB version. Fresh installs never
-        // reach here (saved is null), so no false toast.
-        pendingDbUpgradeVersion = saved.dbSchemaVersion
-
         const hydrated = hydrateAppConfig(saved)
         config.value = hydrated.config
-        if (hydrated.migration.migrated) {
-          pendingMigrationResult = hydrated.migration
-        }
         if (hydrated.shouldPersist) {
           await persistConfig(store, config.value)
-          logger.info(
-            'PreferenceStore',
-            `config hydrated and persisted migration=${hydrated.migration.migrated} repairCount=${hydrated.repairs.length}`,
-          )
+          logger.info('PreferenceStore', `config hydrated and persisted repairCount=${hydrated.repairs.length}`)
         }
         invoke('refresh_runtime_config').catch((e: unknown) => logger.debug('PreferenceStore.refreshRuntimeConfig', e))
       } else {
@@ -108,10 +76,7 @@ export const usePreferenceStore = defineStore('preference', () => {
       config.value = hydrated.config
       if (hydrated.shouldPersist) {
         await persistConfig(store, config.value)
-        logger.info(
-          'PreferenceStore',
-          `config reloaded and repaired repairCount=${hydrated.repairs.length} migration=${hydrated.migration.migrated}`,
-        )
+        logger.info('PreferenceStore', `config reloaded and repaired repairCount=${hydrated.repairs.length}`)
       }
       invoke('refresh_runtime_config').catch((e: unknown) => logger.debug('PreferenceStore.refreshRuntimeConfig', e))
       return true
@@ -123,6 +88,14 @@ export const usePreferenceStore = defineStore('preference', () => {
 
   async function savePreference(): Promise<boolean> {
     try {
+      const issues = validateAppConfigCandidate(config.value)
+      if (issues.length > 0) {
+        logger.warn(
+          'PreferenceStore.savePreference',
+          `invalid config paths=${issues.map((issue) => issue.path).join(',')}`,
+        )
+        return false
+      }
       const store = await getStore()
       const hydrated = hydrateAppConfig(config.value)
       config.value = hydrated.config
@@ -136,7 +109,16 @@ export const usePreferenceStore = defineStore('preference', () => {
   }
 
   async function updateAndSave(cfg: Partial<AppConfig>): Promise<boolean> {
-    const merged = hydrateAppConfig({ ...config.value, ...cfg }).config
+    const candidate = { ...config.value, ...cfg }
+    const issues = validateAppConfigCandidate(candidate)
+    if (issues.length > 0) {
+      logger.warn(
+        'PreferenceStore.updateAndSave',
+        `invalid config paths=${issues.map((issue) => issue.path).join(',')}`,
+      )
+      return false
+    }
+    const merged = hydrateAppConfig(candidate).config
     try {
       const store = await getStore()
       await persistConfig(store, merged)
@@ -168,16 +150,11 @@ export const usePreferenceStore = defineStore('preference', () => {
   }
 
   function recordHistoryDirectory(directory: string) {
-    const historyDirectories = config.value.historyDirectories || []
-    const favoriteDirectories = config.value.favoriteDirectories || []
-    const all = new Set([...historyDirectories, ...favoriteDirectories])
-    if (all.has(directory)) return
-    addHistoryDirectory(directory)
-  }
-
-  function addHistoryDirectory(directory: string) {
-    const historyDirectories = config.value.historyDirectories || []
-    const history = pushItemToFixedLengthArray(historyDirectories, MAX_NUM_OF_DIRECTORIES, directory)
+    if (config.value.favoriteDirectories?.includes(directory)) return
+    const history = [directory, ...(config.value.historyDirectories || []).filter((item) => item !== directory)].slice(
+      0,
+      MAX_NUM_OF_DIRECTORIES,
+    )
     config.value = { ...config.value, historyDirectories: history }
     void savePreference()
   }
@@ -259,28 +236,11 @@ export const usePreferenceStore = defineStore('preference', () => {
     return fetchBtTrackerFromSource(trackerSource, proxy)
   }
 
-  /**
-   * Emit deferred migration signals so MainLayout watchers fire
-   * AFTER i18n locale is set. Call from main.ts after setI18nLocale().
-   */
-  function flushMigrationSignals() {
-    if (pendingMigrationResult) {
-      migrationResult.value = pendingMigrationResult
-      pendingMigrationResult = null
-    }
-    if (pendingDbUpgradeVersion !== null) {
-      dbUpgradeVersion.value = pendingDbUpgradeVersion
-      pendingDbUpgradeVersion = null
-    }
-  }
-
   return {
     engineMode,
     pendingChanges,
     saveBeforeLeave,
     config,
-    migrationResult,
-    dbUpgradeVersion,
     theme,
     locale,
     resolvedLocale,
@@ -292,7 +252,6 @@ export const usePreferenceStore = defineStore('preference', () => {
     reloadPreferenceFromDisk,
     savePreference,
     recordHistoryDirectory,
-    addHistoryDirectory,
     favoriteDirectory,
     cancelFavoriteDirectory,
     removeDirectory,
@@ -301,6 +260,5 @@ export const usePreferenceStore = defineStore('preference', () => {
     updateAppLocale,
     fetchBtTracker,
     resetToDefaults,
-    flushMigrationSignals,
   }
 })

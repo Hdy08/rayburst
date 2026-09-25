@@ -5,6 +5,7 @@ export type TaskStatus = 'active' | 'waiting' | 'paused' | 'error' | 'complete' 
 
 export type AppLogLevel = 'error' | 'warn' | 'info' | 'debug'
 export type Aria2LogLevel = AppLogLevel | 'trace'
+export type FileDeletionMode = 'trash' | 'permanent'
 
 /** URI entry within an aria2 file descriptor. */
 export interface Aria2FileUri {
@@ -18,12 +19,37 @@ export interface Aria2File {
   path: string
   length: string
   completedLength: string
-  /** Whether the file is selected for download ("true" or "false" as string). */
   selected: string
+  priority?: BtFilePriority
   uris: Aria2FileUri[]
 }
 
 /** BitTorrent metadata attached to a task when the download is a torrent. */
+export type Aria2BtState =
+  | 'adding'
+  | 'downloadingMetadata'
+  | 'checking'
+  | 'downloading'
+  | 'recovering'
+  | 'finished'
+  | 'seeding'
+  | 'paused'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
+
+export type Aria2BtFileSelectionState = 'none' | 'awaiting' | 'ready' | 'applying'
+
+export interface Aria2BtError {
+  code: string
+  kind: string
+  category: string
+  message: string
+  recoverable: string
+  operation?: string
+  file?: string
+}
+
 export interface Aria2BtInfo {
   info?: { name: string }
   announceList?: string[][]
@@ -31,6 +57,28 @@ export interface Aria2BtInfo {
   creationDate?: number
   comment?: string
   mode?: string
+  privateTorrent?: string
+  state?: Aria2BtState
+  fileSelectionState?: Aria2BtFileSelectionState
+  error?: Aria2BtError
+  infoHashV1?: string
+  infoHashV2?: string
+  currentTracker?: string
+  numPeers?: string
+  connectingPeers?: string
+  handshakingPeers?: string
+  numSeeds?: string
+  progress?: string
+  availability?: string
+  failedLength?: string
+  redundantLength?: string
+  activeTime?: string
+  finishedTime?: string
+  connectCandidates?: string
+  uploadingPeers?: string
+  webSeeds?: string[]
+  numComplete?: string
+  numIncomplete?: string
 }
 
 /** ED2K metadata attached to a task when the download is an ED2K file link. */
@@ -57,6 +105,7 @@ export interface Aria2Ed2kInfo {
   searchActive?: boolean
   searchMoreResults?: boolean
   searchResultCount?: string
+  sharingTime?: string
   uploadingPeerCount?: string
   waitingUploadPeerCount?: string
   peerCreditCount?: string
@@ -93,7 +142,8 @@ export interface Ed2kSearchResults {
 
 /** Remote peer information for an active BitTorrent task. */
 export interface Aria2Peer {
-  peerId: string
+  peerId?: string
+  peerClientName?: string
   ip: string
   port: string
   bitfield: string
@@ -102,13 +152,102 @@ export interface Aria2Peer {
   downloadSpeed: string
   uploadSpeed: string
   seeder: string
+  state: 'connecting' | 'handshaking' | 'connected'
+  transport: 'tcp' | 'utp'
+  encryption: 'plain' | 'encryptedHandshake' | 'rc4' | 'tls'
+  sources: string[]
+  progress: string
+  flags: string
+  incoming: string
+  downloaded: string
+  uploaded: string
+  completedLength: string
+}
+
+export interface Aria2BtTrackerEndpoint {
+  localEndpoint: string
+  protocol: string
+  status: string
+  failures: string
+  seeders: string
+  leechers: string
+  downloads: string
+  nextAnnounce: string
+  minAnnounce: string
+  updating: string
+  verified: string
+  message?: string
+}
+
+export interface Aria2BtTracker {
+  url: string
+  source: 'metainfo' | 'magnet' | 'resume' | 'global' | 'rpc' | 'unknown'
+  tier: string
+  status: string
+  failures: string
+  seeders: string
+  leechers: string
+  downloads: string
+  nextAnnounce: string
+  minAnnounce: string
+  updating: string
+  verified: string
+  message?: string
+  endpoints: Aria2BtTrackerEndpoint[]
+}
+
+export interface Aria2BtTrackerConfig {
+  url: string
+  tier: number
+}
+
+export interface Aria2BtPeerAddResult {
+  added: number
+  failed: number
 }
 
 /**
  * Complete aria2 task object returned by tellStatus, tellActive, tellWaiting, or tellStopped.
  * All numeric values are represented as strings per the aria2 JSON-RPC protocol.
  */
+export type MediaState =
+  | 'waiting'
+  | 'probing'
+  | 'awaiting-selection'
+  | 'downloading'
+  | 'recording'
+  | 'finalizing'
+  | 'paused'
+  | 'complete'
+  | 'error'
+  | 'removed'
+export interface Aria2MediaTrack {
+  id: string
+  type: 'video' | 'audio' | 'subtitle' | 'muxed'
+  language: string
+  codec: string
+  width: string
+  height: string
+  bandwidth: string
+  frameRate?: string
+  selected: 'true' | 'false'
+}
+export interface Aria2Media {
+  state: MediaState
+  protocol: '' | 'hls' | 'dash' | 'collection'
+  live: 'true' | 'false'
+  duration: string
+  completedDuration: string
+  downloadedLength: string
+  lengthKnown: 'true' | 'false'
+  progress?: string
+  error: string
+  errorCode?: string
+  tracks: Aria2MediaTrack[]
+}
+
 export interface Aria2Task {
+  selectionManaged?: boolean
   gid: string
   status: TaskStatus
   totalLength: string
@@ -121,6 +260,8 @@ export interface Aria2Task {
   files: Aria2File[]
   bittorrent?: Aria2BtInfo
   ed2k?: Aria2Ed2kInfo
+  media?: Aria2Media
+  mediaOptions?: Record<string, string>
   infoHash?: string
   numSeeders?: string
   seeder?: string
@@ -181,6 +322,7 @@ export interface SystemProxyInfo {
   server: string
   /** OS bypass list (comma-separated domains/CIDRs) */
   bypass: string
+  unsupportedBypass: string[]
   /** True when the detected proxy uses a SOCKS protocol (unsupported by aria2) */
   isSocks: boolean
 }
@@ -195,15 +337,15 @@ export interface ClipboardConfig {
   enable: boolean
   /** Detect http:// and https:// URLs. */
   http: boolean
-  /** Detect ftp:// URLs. */
-  ftp: boolean
+  /** Detect sftp:// URLs. */
+  sftp: boolean
   /** Detect magnet: URIs. */
   magnet: boolean
   /** Detect ed2k:// file links. */
   ed2k: boolean
   /** Detect thunder:// (迅雷) links. */
   thunder: boolean
-  /** Detect bare BitTorrent v1 info hashes (40-char hex / 32-char Base32). */
+  /** Detect bare BitTorrent v1 and v2 info hashes. */
   btHash: boolean
 }
 
@@ -215,10 +357,15 @@ export interface PortConflictRecoveryConfig {
   rpc: boolean
   extensionApi: boolean
   bt: boolean
-  dht: boolean
   ed2k: boolean
   ed2kUdp: boolean
 }
+
+export type BtEncryptionMode = 'preferred' | 'required' | 'disabled'
+export type BtTransportMode = 'tcp' | 'utp' | 'both'
+export type BtBlocklistScope = 'peers' | 'peers-and-trackers' | 'all'
+export type MagnetFileSelectionPolicy = 'download-all' | 'prompt' | 'manual'
+export type BtFilePriority = 'off' | 'normal' | 'high' | 'top'
 
 /** A file category rule mapping extensions to a download directory. */
 export type FileCategoryUrlPatternMode = 'wildcard' | 'regex'
@@ -232,8 +379,9 @@ export interface FileCategory {
   urlPatterns?: string[]
   /** Matching mode for urlPatterns. */
   urlPatternMode?: FileCategoryUrlPatternMode
-  /** Absolute directory path where matching files are saved. */
+  /** Relative to the default directory, or an explicitly fixed absolute path. */
   directory: string
+  directoryMode: 'relative' | 'absolute'
   /** Whether this is a built-in category (cannot be deleted, label resolved via i18n). */
   builtIn?: boolean
 }
@@ -258,12 +406,6 @@ export interface UserAgentRule {
 
 /** Application user preferences with full type coverage. */
 export interface AppConfig {
-  /** Schema version for config migration. Absent in pre-migration configs (treated as 0). */
-  configVersion: number
-  /** Last known DB schema version for upgrade toast detection.
-   *  Stored in config.json so that existing users (who already have config data)
-   *  can be distinguished from fresh installs (who have empty config). */
-  dbSchemaVersion: number
   theme: 'auto' | 'light' | 'dark'
   colorScheme: string
   customColorScheme: string
@@ -276,13 +418,17 @@ export interface AppConfig {
   taskPaginationOpacity: number
   speedLimitButtonVisible: boolean
   speedLimitButtonOpacity: number
+  showLogoWhenEmpty: boolean
+  reduceMotion: boolean
   sidebarTaskCounts: boolean
   taskPageSize: number
   locale: string
   dir: string
-  split: number
+  rememberSaveLocation: boolean
+  lastSaveLocation: string
+  streamMaxRangeSize: string
+  streamMaxConnections: number
   maxConcurrentDownloads: number
-  maxConnectionPerServer: number
   maxOverallDownloadLimit: string
   maxOverallUploadLimit: string
   maxDownloadLimit: string
@@ -309,8 +455,17 @@ export interface AppConfig {
   shareTime: number
   shareRatio: number
   btMaxPeers: number
-  btDhtIpv4Enabled: boolean
-  btDhtIpv6Enabled: boolean
+  btMaxConnections: number
+  btMaxUploads: number
+  btMaxUploadsPerTorrent: number
+  btTransport: BtTransportMode
+  btFirstLastPieceFirst: boolean
+  btRateLimitOverhead: boolean
+  btAnonymousMode: boolean
+  btUserAgent: string
+  btPeerIdPrefix: string
+  btBlocklistScope: BtBlocklistScope
+  btDhtEnabled: boolean
   btPeerExchangeEnabled: boolean
   btLocalPeerDiscoveryEnabled: boolean
   openAtLogin: boolean
@@ -328,8 +483,11 @@ export interface AppConfig {
   keepSharing: boolean
   keepWindowState: boolean
 
+  mediaSelectBeforeDownload: boolean
+  mediaDefaultFormat: 'mp4' | 'mkv'
   newTaskShowDownloading: boolean
   noConfirmBeforeDeleteTask: boolean
+  fileDeletionMode: FileDeletionMode
   deleteFilesWhenSkipConfirm: boolean
   resumeAllWhenAppLaunched: boolean
   taskNotification: boolean
@@ -346,7 +504,6 @@ export interface AppConfig {
   dockBadgeSpeed: boolean
   logLevel: AppLogLevel
   aria2LogLevel: Aria2LogLevel
-  engineBinPath: string
   /** Directory for internal temporary engine files. Empty means the OS temporary directory. */
   tempFilesDir: string
   cookie: string
@@ -355,7 +512,6 @@ export interface AppConfig {
   /** When true, extension-intercepted URI downloads bypass the AddTask dialog. */
   autoSubmitFromExtension: boolean
   /** When true, extension-intercepted BT tasks skip file selection and download every file. */
-  autoSelectAllBtFilesFromExtension: boolean
   /** When true, auto-submitted extension downloads are handled in the
    *  background without raising the main window. Only applies when
    *  autoSubmitFromExtension is enabled. */
@@ -390,7 +546,8 @@ export interface AppConfig {
   autoChangeConflictingPorts: boolean
   portConflictRecovery: PortConflictRecoveryConfig
   listenPort: number
-  dhtListenPort: number
+  btExternalIp: string
+  btExternalPort: number
   ed2kListenPort: number
   ed2kUdpListenPort: number
   ed2kServer: string
@@ -399,10 +556,12 @@ export interface AppConfig {
   ed2kBootstrapAutoSync: boolean
   ed2kBootstrapSyncIntervalHours: number
   ed2kUploadSlots: number
+  ed2kMaxConnections: number
+  ed2kPreviewPriority: boolean
   ed2kSearchTimeout: number
   btTracker: string
-  btForceEncryption: boolean
-  pauseMetadata: boolean
+  btEncryption: BtEncryptionMode
+  magnetFileSelectionPolicy: MagnetFileSelectionPolicy
   continue: boolean
   /** When true, aria2 applies the remote server's Last-Modified timestamp
    *  to the local file instead of using the download-completion time. */
@@ -431,8 +590,6 @@ export interface AppConfig {
   /** Disk space pre-allocation method. Maps to aria2 --file-allocation.
    *  Values: 'none' | 'trunc' | 'prealloc' | 'falloc' */
   fileAllocation: string
-  /** Enables c-ares based asynchronous DNS resolution. Maps to aria2 --async-dns. */
-  asyncDns: boolean
   /** Per-tab sort configuration (field + direction), persisted independently per tab. */
   taskSort: import('@/composables/useTaskSort').TaskSortConfig
   /** Per-tab manual task order. Unknown tasks are inserted above stored tasks. */
@@ -451,6 +608,9 @@ export interface BrowserRequestHeader {
 }
 
 export interface ExternalDownloadContext {
+  requestId?: string
+  filename?: string
+  filenameSource?: 'browser' | 'suggested'
   url?: string
   finalUrl?: string
   referer?: string
@@ -486,6 +646,7 @@ export interface HttpAuthInput {
 
 /** Parameters for adding a URI-based download task. */
 export interface AddUriParams {
+  contexts?: Record<string, ExternalDownloadContext>
   uris: string[]
   outs: string[]
   options: Aria2EngineOptions
@@ -495,19 +656,37 @@ export interface AddUriParams {
 
 /** Parameters for adding a torrent-based download task. */
 export interface AddTorrentParams {
+  requestId?: string
   torrent: string
   options: Aria2EngineOptions
+}
+
+export interface TorrentInspectionFile {
+  index: string
+  path: string
+  length: string
+}
+
+export interface TorrentInspection {
+  name: string
+  mode: 'single' | 'multi'
+  infoHashV1: string
+  infoHashV2: string
+  totalLength: string
+  files: TorrentInspectionFile[]
+}
+
+export interface BtFileSelectionItem {
+  index: number
+  name: string
+  path: string
+  length: number
 }
 
 /** Parameters for changing options on an existing task. */
 export interface TaskOptionParams {
   gid: string
   options: Aria2EngineOptions
-}
-
-/** Aria2File enriched with a parsed file extension (used by file filter utilities). */
-export interface EnrichedFile extends Aria2File {
-  extension?: string
 }
 
 /** Update metadata returned by the Rust `check_for_update` command. */
@@ -525,6 +704,7 @@ export interface TauriUpdate {
 
 export type BatchItemKind = 'uri' | 'torrent'
 export type BatchItemStatus = 'pending' | 'submitted' | 'failed'
+export type TorrentInspectionState = 'reading' | 'inspecting' | 'ready' | 'failed'
 
 /** A single item in the add-task batch queue. */
 export interface BatchItem {
@@ -539,10 +719,12 @@ export interface BatchItem {
   payload: string
   /** Browser request context captured by the extension for this item. */
   browserContext?: ExternalDownloadContext
-  /** Parsed torrent metadata — only present for torrent items. */
-  torrentMeta?: { infoHash: string; files: { idx: number; path: string; length: number }[] }
-  /** Selected file indices for torrent selective download. */
+  /** Native engine metainfo inspection for torrent items. */
+  torrentMeta?: TorrentInspection
+  /** File indexes selected for the torrent download. */
   selectedFileIndices?: number[]
+  /** Independent pre-submission inspection state for torrent items. */
+  inspectionState?: TorrentInspectionState
   status: BatchItemStatus
   /** Error message when status is 'failed'. */
   error?: string
@@ -560,11 +742,12 @@ export interface TaskStartNotificationTask {
  * Captures all data needed to fully restore restart, delete, and stale-cleanup
  * semantics for each individual file within a multi-file download. */
 export interface HistoryFileSnapshot {
+  index?: string
+  completedLength?: string
   /** Full local file path. */
   path: string
   /** File size as string (aria2 convention). */
   length?: string
-  /** Whether the file was selected for download ("true"/"false"). */
   selected?: string
   /** All download URIs for this file — preserving mirrors, not just the first. */
   uris: string[]
@@ -574,20 +757,26 @@ export interface HistoryFileSnapshot {
  *
  * This is the single source of truth for multi-file task reconstruction.
  * All consumers MUST use the centralized helpers in useTaskLifecycle.ts:
- * - buildHistoryMeta()  — write path
  * - parseHistoryMeta()  — read path
  * - extractHistoryFilePaths() — stale cleanup */
 export interface HistoryMeta {
+  media?: Aria2Media
+  mediaOptions?: Record<string, string>
+  completedLength?: string
+  errorCode?: string
+  errorMessage?: string
   /** BT info hash — used for magnet link reconstruction on restart. */
   infoHash?: string
   /** Engine-serialized BT magnet link. */
   magnetLink?: string
   /** Engine-serialized ED2K file link. */
   ed2kLink?: string
-  /** ED2K file hash — used to deduplicate shared-upload records across sessions. */
+  /** ED2K content identity; history ownership remains per GID. */
   ed2kHash?: string
   /** BT announce tiers — used to restore tracker-aware magnet restart links. */
   announceList?: string[][]
+  /** Final duration spent actively sharing a P2P task. */
+  sharingTime?: string
   /** Complete file list with all URIs — present when files.length > 1. */
   files?: HistoryFileSnapshot[]
 }
@@ -621,8 +810,32 @@ export interface HistoryRecord {
   meta?: string
 }
 
+export interface BatchTaskFailure {
+  gid: string
+  message: string
+}
+
+export interface BatchTaskOperationResult {
+  succeeded: string[]
+  failed: BatchTaskFailure[]
+}
+
+export interface TaskDeletionOptions {
+  deleteMode?: FileDeletionMode
+}
+
+export interface BatchDeleteTaskTarget extends TaskDeletionOptions {
+  gid: string
+}
+
+export interface ResumeEligibleResult {
+  resumed: number
+  blocked: number
+}
+
 /** Aria2 JSON-RPC client API surface consumed by the task store. */
 export interface TaskApi {
+  retryMedia: (gid: string) => Promise<string>
   fetchTaskList: (params: { type: string; limit?: number }) => Promise<Aria2Task[]>
   fetchTaskItem: (params: { gid: string }) => Promise<Aria2Task>
   fetchTaskItemWithPeers: (params: { gid: string }) => Promise<Aria2Task & { peers: Aria2Peer[] }>
@@ -634,14 +847,16 @@ export interface TaskApi {
   changeOption: (params: TaskOptionParams) => Promise<void>
   getFiles: (params: { gid: string }) => Promise<Aria2File[]>
   removeTask: (params: { gid: string }) => Promise<string>
+  deleteTask: (params: { gid: string } & TaskDeletionOptions) => Promise<void>
+  batchDeleteTasks: (params: { tasks: BatchDeleteTaskTarget[] }) => Promise<BatchTaskOperationResult>
+  finishSharing: (params: { gid: string }) => Promise<void>
+  batchFinishSharing: (params: { gids: string[] }) => Promise<BatchTaskOperationResult>
   forcePauseTask: (params: { gid: string }) => Promise<string>
+  forcePauseAll: () => Promise<string>
   pauseTask: (params: { gid: string }) => Promise<string>
   resumeTask: (params: { gid: string }) => Promise<string>
-  batchResumeTask: (params: { gids: string[] }) => Promise<unknown[][]>
-  batchPauseTask: (params: { gids: string[] }) => Promise<unknown[][]>
-  batchForcePauseTask: (params: { gids: string[] }) => Promise<unknown[][]>
-  batchRemoveTask: (params: { gids: string[] }) => Promise<unknown[][]>
+  resumeEligible: () => Promise<ResumeEligibleResult>
   removeTaskRecord: (params: { gid: string }) => Promise<string>
-  purgeTaskRecord: () => Promise<string>
+  purgeTaskRecords: () => Promise<void>
   saveSession: () => Promise<string>
 }

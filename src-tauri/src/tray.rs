@@ -1,27 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use tauri::tray::TrayIcon;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, WebviewWindowBuilder,
 };
 
-/// Embedded tray icon bytes.
-///
-/// On macOS: a white-on-transparent template image (@2x, 88×88 px).
-/// The system auto-inverts for light/dark menu bar — white silhouette
-/// is the standard macOS convention.
-///
-/// On Windows/Linux: the full-colour app icon (64×64 px) for the
-/// system tray.  Must be clearly visible on both light and dark
-/// taskbar themes — a white silhouette would be invisible on a light
-/// taskbar.
-#[cfg(target_os = "macos")]
-pub const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon@2x.png");
-#[cfg(not(target_os = "macos"))]
-pub const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon-color.png");
+#[cfg(test)]
+use tauri::WebviewUrl;
+
+pub const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/64x64.png");
 
 /// Whether the current platform expects the tray icon to be rendered as an
 /// AppKit template image.
@@ -43,7 +31,7 @@ pub fn tray_icon_image() -> tauri::image::Image<'static> {
 /// Any path that re-sets the icon must restore that flag immediately afterward,
 /// otherwise AppKit treats the bitmap as a normal white image.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn refresh_tray_icon(tray: &TrayIcon<tauri::Wry>) -> tauri::Result<()> {
+pub fn refresh_tray_icon(tray: &tauri::tray::TrayIcon<tauri::Wry>) -> tauri::Result<()> {
     let icon = tray_icon_image();
     tray.set_icon_with_as_template(Some(icon), TRAY_ICON_IS_TEMPLATE)
 }
@@ -53,6 +41,30 @@ pub fn refresh_tray_icon(tray: &TrayIcon<tauri::Wry>) -> tauri::Result<()> {
 /// at runtime without rebuilding the menu.
 pub struct TrayMenuState {
     pub items: Mutex<HashMap<String, MenuItem<tauri::Wry>>>,
+}
+
+#[derive(Default)]
+pub struct MainWindowState(pub Mutex<()>);
+
+pub fn request_main_window(app: &AppHandle, source: &'static str, visible: bool) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<MainWindowState>();
+        let _creation = state
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let handle = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            if visible {
+                activate_main_window(&handle, source);
+            } else {
+                ensure_main_window(&handle, source);
+            }
+        }) {
+            log::error!("window:request-schedule-failed source={source} error={error}");
+        }
+    });
 }
 
 /// Returns the existing main window, or recreates it if it was destroyed.
@@ -76,29 +88,19 @@ pub fn get_or_create_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow
     crate::services::external_input::mark_frontend_unready(app);
     crate::services::frontend_action::mark_frontend_actions_unready(app);
 
-    let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("Motrix Next")
-        .inner_size(1068.0, 680.0)
-        .min_inner_size(560.0, 360.0)
-        .visible(false);
-
-    // macOS: native traffic lights via overlay title bar (matches tauri.macos.conf.json).
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::TitleBarStyle;
-        builder = builder
-            .transparent(true)
-            .decorations(true)
-            .hidden_title(true)
-            .title_bar_style(TitleBarStyle::Overlay)
-            .shadow(true);
-    }
-    // Windows/Linux: transparent frameless window with custom controls.
-    // No CSS border-radius — DWM provides native corner rounding on Win11.
-    #[cfg(not(target_os = "macos"))]
-    {
-        builder = builder.transparent(true).decorations(false);
-    }
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == "main")?;
+    let builder = match WebviewWindowBuilder::from_config(app, config) {
+        Ok(builder) => builder,
+        Err(error) => {
+            log::error!("tray:window-recreate-failed error={error}");
+            return None;
+        }
+    };
 
     match builder.build() {
         Ok(w) => {
@@ -255,7 +257,7 @@ fn retry_main_window_activation(app: &AppHandle, source: &'static str, generatio
 pub fn setup_tray(app: &AppHandle) -> Result<TrayMenuState, Box<dyn std::error::Error>> {
     // Create MenuItem references for TrayMenuState (used by update_tray_menu_labels).
     // All three platforms use the same native menu — no platform-specific branching.
-    let show_item = MenuItem::with_id(app, "show", "Show Motrix Next", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "Show Rayburst", true, None::<&str>)?;
     let new_task_item = MenuItem::with_id(app, "tray-new-task", "New Task", true, None::<&str>)?;
     let resume_all_item =
         MenuItem::with_id(app, "tray-resume-all", "Resume All", true, None::<&str>)?;
@@ -285,10 +287,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayMenuState, Box<dyn std::error::
         ],
     )?;
 
-    let _tray = TrayIconBuilder::with_id("motrix-next")
+    let _tray = TrayIconBuilder::with_id("rayburst")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Motrix Next")
+        .tooltip("Rayburst")
         .icon(tray_icon_image())
         .icon_as_template(TRAY_ICON_IS_TEMPLATE)
         .on_tray_icon_event(|tray, event| {
@@ -317,7 +319,9 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayMenuState, Box<dyn std::error::
                     log::info!("tray:pause-all — calling aria2 directly");
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Some(aria2) = app.try_state::<crate::aria2::client::Aria2State>() {
+                        if let Some(aria2) =
+                            app.try_state::<crate::services::tasks::TaskServiceState>()
+                        {
                             if let Err(e) = aria2.0.force_pause_all().await {
                                 log::warn!("tray:pause-all failed: {e}");
                             }
@@ -328,7 +332,9 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayMenuState, Box<dyn std::error::
                     log::info!("tray:resume-all — calling aria2 directly");
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Some(aria2) = app.try_state::<crate::aria2::client::Aria2State>() {
+                        if let Some(aria2) =
+                            app.try_state::<crate::services::tasks::TaskServiceState>()
+                        {
                             match aria2.0.resume_eligible().await {
                                 Ok(result) => log::info!(
                                     "tray:resume-all resumed={} blocked={}",
@@ -395,7 +401,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayMenuState, Box<dyn std::error::
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            if let Some(tray) = app_handle.tray_by_id("motrix-next") {
+            if let Some(tray) = app_handle.tray_by_id("rayburst") {
                 let _ = refresh_tray_icon(&tray);
                 log::info!(
                     "tray:linux-deferred-icon-refresh — re-set icon after 3 s startup delay"

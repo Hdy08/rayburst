@@ -1,18 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent, nextTick, reactive, ref } from 'vue'
+import { defineComponent, reactive } from 'vue'
 import { mount } from '@vue/test-utils'
-import type { TaskStartNotificationTask } from '@shared/types'
 
 const listenMock = vi.fn()
 const invokeMock = vi.fn()
-const routerPushMock = vi.fn()
 const routerBeforeEachMock = vi.fn()
+const routerPushMock = vi.fn().mockResolvedValue(undefined)
 const dragDropListenerMock = vi.fn()
 const openDialogMock = vi.fn()
 const openUrlMock = vi.fn()
-const platformMock = vi.hoisted(() => ({ isWindows: { value: false } }))
-
-vi.mock('@/composables/usePlatform', () => ({ usePlatform: () => platformMock }))
 const windowApiMock = vi.hoisted(() => ({
   unminimize: vi.fn(),
   show: vi.fn(),
@@ -26,7 +22,6 @@ const loggerMock = vi.hoisted(() => ({
   warn: vi.fn(),
 }))
 
-const setEngineReadyMock = vi.fn()
 let eventUnlisteners: Array<ReturnType<typeof vi.fn>> = []
 let eventCallbacks: Record<string, (event: { payload: unknown }) => unknown> = {}
 
@@ -64,14 +59,9 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/api/aria2', () => ({
   isEngineReady: vi.fn(() => true),
-  setEngineReady: (...args: unknown[]) => setEngineReadyMock(...args),
 }))
 
 vi.mock('@shared/logger', () => ({
-  formatLogFields: (fields: Record<string, string | number | boolean | null | undefined>) =>
-    Object.entries(fields)
-      .map(([key, value]) => `${key}=${String(value)}`)
-      .join(' '),
   logger: loggerMock,
 }))
 
@@ -84,8 +74,6 @@ import { useAppEvents } from '../useAppEvents'
 type UseAppEventsDeps = Parameters<typeof useAppEvents>[0]
 
 function createDeps() {
-  const showEngineOverlay = ref(false)
-  const isExiting = ref(false)
   const appStore = reactive({
     showAddTaskDialog: vi.fn(),
     enqueueBatch: vi.fn(() => 0),
@@ -93,8 +81,6 @@ function createDeps() {
     handleExternalInputs: vi.fn(),
     setExternalInputErrorHandler: vi.fn(),
     setExternalInputStartHandler: vi.fn(),
-    engineReady: false,
-    engineRestarting: true,
     addTaskVisible: false,
     pendingBatch: [] as unknown[],
     pendingMagnetGids: [] as string[],
@@ -102,7 +88,6 @@ function createDeps() {
   })
   const taskStore = reactive({
     taskList: [] as unknown[],
-    selectedGidList: [] as string[],
     hasPausedTasks: vi.fn().mockResolvedValue(false),
     hasActiveTasks: vi.fn().mockResolvedValue(false),
     resumeAllTask: vi.fn().mockResolvedValue(undefined),
@@ -128,7 +113,6 @@ function createDeps() {
   const navDialog = {
     warning: vi.fn(),
   }
-  const onNotificationTaskAction = vi.fn().mockResolvedValue(undefined)
 
   const deps: UseAppEventsDeps = {
     t: (key) => key,
@@ -137,14 +121,11 @@ function createDeps() {
     preferenceStore,
     message,
     navDialog: navDialog as never,
-    showEngineOverlay,
-    isExiting,
     handleExitConfirm: vi.fn().mockResolvedValue(undefined),
-    onNotificationTaskAction,
     onAbout: vi.fn(),
   }
 
-  return { deps, appStore, taskStore, message, onNotificationTaskAction }
+  return { deps, appStore, taskStore, message }
 }
 
 function mountComposable(deps: UseAppEventsDeps) {
@@ -168,7 +149,6 @@ function mountComposable(deps: UseAppEventsDeps) {
 
 describe('useAppEvents', () => {
   beforeEach(() => {
-    platformMock.isWindows.value = false
     vi.clearAllMocks()
     eventUnlisteners = []
     eventCallbacks = {}
@@ -187,40 +167,22 @@ describe('useAppEvents', () => {
       return unlisten
     })
     routerBeforeEachMock.mockImplementation(() => vi.fn().mockName('remove-nav-guard'))
-    routerPushMock.mockResolvedValue(undefined)
     dragDropListenerMock.mockImplementation(async () => vi.fn().mockName('unlisten:drag-drop'))
     openDialogMock.mockResolvedValue(null)
     openUrlMock.mockResolvedValue(undefined)
     invokeMock.mockResolvedValue([])
   })
 
-  it('returns a teardown that unregisters engine listeners, the watcher, and the router guard', async () => {
-    const { deps, appStore, message } = createDeps()
+  it('returns a teardown that unregisters event listeners and the router guard', async () => {
+    const { deps } = createDeps()
     const { setupListeners } = mountComposable(deps)
 
     const listeners = await setupListeners()
     expect(typeof (listeners as { teardown?: unknown }).teardown).toBe('function')
-
-    appStore.engineRestarting = false
-    await nextTick()
-    expect(message.error).toHaveBeenCalledTimes(1)
-
-    appStore.engineRestarting = true
-    await nextTick()
-    message.success.mockClear()
-    message.error.mockClear()
-    message.warning.mockClear()
-    message.info.mockClear()
     ;(listeners as { teardown: () => void }).teardown()
-
-    appStore.engineRestarting = false
-    await nextTick()
-
-    expect(message.error).not.toHaveBeenCalled()
     expect(routerBeforeEachMock).toHaveBeenCalledTimes(1)
 
-    const engineUnlisteners = eventUnlisteners.slice(0, 3)
-    for (const unlisten of engineUnlisteners) {
+    for (const unlisten of eventUnlisteners) {
       expect(unlisten).toHaveBeenCalledTimes(1)
     }
 
@@ -229,20 +191,14 @@ describe('useAppEvents', () => {
     expect(removeGuard).toHaveBeenCalledTimes(1)
   })
 
-  it('cleans up the watcher and listeners automatically on component unmount', async () => {
-    const { deps, appStore, message } = createDeps()
+  it('cleans up listeners automatically on component unmount', async () => {
+    const { deps } = createDeps()
     const { setupListeners, unmount } = mountComposable(deps)
 
     await setupListeners()
     unmount()
 
-    appStore.engineRestarting = false
-    await nextTick()
-
-    expect(message.error).not.toHaveBeenCalled()
-
-    const engineUnlisteners = eventUnlisteners.slice(0, 3)
-    for (const unlisten of engineUnlisteners) {
+    for (const unlisten of eventUnlisteners) {
       expect(unlisten).toHaveBeenCalledTimes(1)
     }
 
@@ -254,7 +210,6 @@ describe('useAppEvents', () => {
   it('keeps task data intact while task route tabs switch', async () => {
     const { deps, taskStore } = createDeps()
     taskStore.taskList = [{ gid: 'old-1' }, { gid: 'old-2' }]
-    taskStore.selectedGidList = ['old-1']
     const { setupListeners } = mountComposable(deps)
 
     await setupListeners()
@@ -273,7 +228,6 @@ describe('useAppEvents', () => {
     )
 
     expect(taskStore.taskList).toEqual([{ gid: 'old-1' }, { gid: 'old-2' }])
-    expect(taskStore.selectedGidList).toEqual(['old-1'])
   })
 
   it('does not process external input when the Rust pending queue is empty', async () => {
@@ -305,7 +259,7 @@ describe('useAppEvents', () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === 'take_pending_deep_links') {
         return {
-          urls: ['motrixnext://new?url=https%3A%2F%2Fexample.com%2Ffile.zip'],
+          urls: ['https://example.com/file.zip?token=secret-token'],
           silent: true,
         }
       }
@@ -319,13 +273,11 @@ describe('useAppEvents', () => {
     expect(windowApiMock.unminimize).not.toHaveBeenCalled()
     expect(windowApiMock.show).not.toHaveBeenCalled()
     expect(windowApiMock.setFocus).not.toHaveBeenCalled()
-    expect(appStore.handleDeepLinkUrls).toHaveBeenCalledWith([
-      'motrixnext://new?url=https%3A%2F%2Fexample.com%2Ffile.zip',
-    ])
+    expect(appStore.handleDeepLinkUrls).toHaveBeenCalledWith(['https://example.com/file.zip?token=secret-token'])
   })
 
   it('routes silent live deep-link events without showing or focusing the window', async () => {
-    const deepLink = 'motrixnext://new?url=https%3A%2F%2Fexample.com%2Ffile.zip'
+    const deepLink = 'https://example.com/file.zip?token=secret-token'
     const { deps, appStore } = createDeps()
     const { setupListeners } = mountComposable(deps)
 
@@ -358,17 +310,14 @@ describe('useAppEvents', () => {
     await setupListeners()
     invokeMock.mockClear()
     const lastCall = appStore.setExternalInputStartHandler.mock.lastCall
-    const handler = lastCall?.[0] as ((tasks: TaskStartNotificationTask[]) => void) | null | undefined
+    const handler = lastCall?.[0] as ((taskNames: string[]) => void) | null | undefined
 
     expect(typeof handler).toBe('function')
 
-    handler?.([{ name: 'file.zip', gid: 'external-gid-1' }])
+    handler?.(['file.zip'])
 
     expect(message.info).toHaveBeenCalledWith('task.download-start-message')
-    expect(invokeMock).toHaveBeenCalledWith('send_task_start_notification', {
-      taskNames: ['file.zip'],
-      tasks: [{ name: 'file.zip', gid: 'external-gid-1' }],
-    })
+    expect(invokeMock).not.toHaveBeenCalled()
   })
 
   it('keeps the external input error handler registered after listener setup', async () => {
@@ -397,7 +346,7 @@ describe('useAppEvents', () => {
       payload: [{ kind: 'bt', oldPort: 29120, newPort: 29800 }],
     })
 
-    expect(message.success).toHaveBeenCalledWith('preferences.port-auto-switched')
+    expect(message.info).toHaveBeenCalledWith('preferences.port-auto-switched')
     expect(deps.preferenceStore.updatePreference).toHaveBeenCalledWith({
       listenPort: 29800,
     })
@@ -434,31 +383,17 @@ describe('useAppEvents', () => {
     expect(message.warning).toHaveBeenCalledWith('preferences.port-auto-switch-disabled')
   })
 
-  it('deduplicates concurrent engine recovered readiness probes', async () => {
-    let resolveWait: ((ready: boolean) => void) | undefined
-    invokeMock.mockImplementation((command: string) => {
-      if (command === 'wait_for_engine') {
-        return new Promise((resolve) => {
-          resolveWait = resolve
-        })
-      }
-      return Promise.resolve([])
+  it('opens Downloads for a submitted native task after WebView recreation', async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      return command === 'take_pending_frontend_actions'
+        ? [{ channel: 'tray-menu-action', action: 'show-downloads' }]
+        : []
     })
-    const { deps } = createDeps()
+    const { deps, appStore } = createDeps()
     const { setupListeners } = mountComposable(deps)
-
     await setupListeners()
-    const first = eventCallbacks['engine-recovered']?.({ payload: { source: 'bt-port-auto-switch' } })
-    const second = eventCallbacks['engine-recovered']?.({ payload: { source: 'bt-port-auto-switch' } })
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0)
-    })
-
-    expect(invokeMock).toHaveBeenCalledWith('wait_for_engine')
-    expect(invokeMock.mock.calls.filter(([command]) => command === 'wait_for_engine')).toHaveLength(1)
-
-    resolveWait?.(true)
-    await Promise.all([first, second])
+    expect(routerPushMock).toHaveBeenCalledWith('/task/all')
+    expect(appStore.showAddTaskDialog).not.toHaveBeenCalled()
   })
 
   it('opens the add-task dialog from a pending tray action after listeners are ready', async () => {
@@ -477,94 +412,9 @@ describe('useAppEvents', () => {
     expect(appStore.showAddTaskDialog).toHaveBeenCalledTimes(1)
   })
 
-  it('opens the task list from a pending notification action after listeners are ready', async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'take_pending_frontend_actions') {
-        return [{ channel: 'notification-action', action: 'show-task-list' }]
-      }
-      return []
-    })
-    const { deps } = createDeps()
-    const { setupListeners } = mountComposable(deps)
-
-    await setupListeners()
-
-    expect(windowApiMock.show).toHaveBeenCalled()
-    expect(windowApiMock.setFocus).toHaveBeenCalled()
-    expect(routerPushMock).toHaveBeenCalledWith('/task/all')
-  })
-
-  it('opens the task list from a live notification action', async () => {
-    const { deps } = createDeps()
-    const { setupListeners } = mountComposable(deps)
-
-    await setupListeners()
-    await eventCallbacks['notification-action']?.({ payload: 'show-task-list' })
-
-    expect(routerPushMock).toHaveBeenCalledWith('/task/all')
-  })
-
-  it.each(['activate', 'show-task-list'])('uses native Windows activation for notification %s', async (action) => {
-    platformMock.isWindows.value = true
-    const { deps } = createDeps()
-    const { setupListeners } = mountComposable(deps)
-    await setupListeners()
-    await eventCallbacks['notification-action']?.({ payload: action })
-    expect(invokeMock).toHaveBeenCalledWith('activate_app_window')
-    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
-    expect(windowApiMock.show).not.toHaveBeenCalled()
-    if (action === 'show-task-list') expect(routerPushMock).toHaveBeenCalledWith('/task/all')
-  })
-
-  it.each(['open-file', 'show-in-folder'])('never activates Motrix for Windows notification %s', async (action) => {
-    platformMock.isWindows.value = true
-    const { deps, onNotificationTaskAction } = createDeps()
-    const { setupListeners } = mountComposable(deps)
-    await setupListeners()
-    await eventCallbacks['notification-action']?.({ payload: { action, payload: 'gid-1' } })
-    expect(onNotificationTaskAction).toHaveBeenCalledWith(action, 'gid-1')
-    expect(invokeMock).not.toHaveBeenCalledWith('activate_app_window')
-    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
-    expect(windowApiMock.show).not.toHaveBeenCalled()
-  })
-
-  it('dispatches a live notification task action with its GID payload', async () => {
-    const { deps, onNotificationTaskAction } = createDeps()
-    const { setupListeners } = mountComposable(deps)
-
-    await setupListeners()
-    await eventCallbacks['notification-action']?.({
-      payload: { action: 'open-file', payload: '0123456789abcdef' },
-    })
-
-    expect(onNotificationTaskAction).toHaveBeenCalledWith('open-file', '0123456789abcdef')
-    expect(windowApiMock.unminimize).not.toHaveBeenCalled()
-    expect(windowApiMock.show).not.toHaveBeenCalled()
-    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
-  })
-
-  it('dispatches a pending show-in-folder action with its GID payload', async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'take_pending_frontend_actions') {
-        return [{ channel: 'notification-action', action: 'show-in-folder', payload: 'gid-1' }]
-      }
-      return []
-    })
-    const { deps, onNotificationTaskAction } = createDeps()
-    const { setupListeners } = mountComposable(deps)
-
-    await setupListeners()
-
-    expect(onNotificationTaskAction).toHaveBeenCalledWith('show-in-folder', 'gid-1')
-    expect(windowApiMock.unminimize).not.toHaveBeenCalled()
-    expect(windowApiMock.show).not.toHaveBeenCalled()
-    expect(windowApiMock.setFocus).not.toHaveBeenCalled()
-  })
-
   it('continues routing external input when focusing the restored window fails', async () => {
     windowApiMock.setFocus.mockRejectedValueOnce(new Error('focus blocked by OS'))
-    const deepLink =
-      'motrixnext://new?url=https%3A%2F%2Fexample.com%2Ffile.zip&cookie=session%3Dsecret-token&filename=file.zip'
+    const deepLink = 'https://example.com/file.zip?token=secret-token'
     const { deps, appStore } = createDeps()
     const { setupListeners } = mountComposable(deps)
 
@@ -573,12 +423,16 @@ describe('useAppEvents', () => {
 
     expect(appStore.handleDeepLinkUrls).toHaveBeenCalledTimes(1)
     expect(appStore.handleDeepLinkUrls).toHaveBeenCalledWith([deepLink])
-    expect(loggerMock.warn).toHaveBeenCalledWith('ExternalInput', expect.stringContaining('stage=setFocus'))
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      'ExternalInput',
+      'window_stage_failed',
+      expect.objectContaining({ stage: 'setFocus', result: 'failed' }),
+    )
     expect(loggerMock.info.mock.calls.flat().join(' ')).not.toContain('secret-token')
   })
 
   it('logs the external input handling result returned by the app store', async () => {
-    const deepLink = 'motrixnext:/new?url=https%3A%2F%2Fexample.com%2Ffile.zip'
+    const deepLink = 'https://example.com/file.zip?token=secret-token'
     const { deps, appStore } = createDeps()
     appStore.handleDeepLinkUrls.mockReturnValueOnce({ received: 1, queued: 1, autoSubmitted: 0, ignored: 0 })
     const { setupListeners } = mountComposable(deps)
@@ -587,7 +441,11 @@ describe('useAppEvents', () => {
     await eventCallbacks['deep-link-open']?.({ payload: [deepLink] })
 
     expect(appStore.handleDeepLinkUrls).toHaveBeenCalledWith([deepLink])
-    expect(loggerMock.info).toHaveBeenCalledWith('ExternalInput', expect.stringContaining('queued=1'))
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      'ExternalInput',
+      'download_routing_completed',
+      expect.objectContaining({ queued: 1, result: 'ok' }),
+    )
   })
 
   it('attaches the external input trace id before routing structured payloads', async () => {

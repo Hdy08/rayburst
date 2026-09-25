@@ -1,18 +1,21 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MotrixNext",
-  "identifier": "com.motrix.next",
+  "productName": "Rayburst",
+  "identifier": "dev.aninsomniacy.rayburst",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": {
+      "script": "pnpm build:native-launcher && node node_modules/vite/bin/vite.js",
+      "wait": false
+    },
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build:native-launcher && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "Motrix Next",
+        "title": "Rayburst",
         "width": 1068,
         "height": 680,
         "minWidth": 373,
@@ -21,14 +24,14 @@
         "decorations": false,
         "visible": false,
         "center": true,
-        "shadow": false
+        "shadow": true
       }
     ],
     "security": {
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPCACHE/motrix-background/*"
+          "$APPCACHE/rayburst-background/*"
         ]
       },
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
@@ -39,17 +42,18 @@
     "active": true,
     "targets": "all",
     "publisher": "AnInsomniacy",
-    "copyright": "Copyright © 2025 AnInsomniacy. All rights reserved.",
-    "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/motrix-next-engine"],
+    "copyright": "Copyright (c) 2025-present AnInsomniacy",
+    "createUpdaterArtifacts": false,
+    "externalBin": ["binaries/aria2-next", "generated-binaries/rayburst-browser-launcher"],
     "resources": [
-      "binaries/aria2.conf",
       "data/ed2k-bootstrap/server.met",
       "data/ed2k-bootstrap/nodes.dat",
       "data/bt-peer-blocklist.txt",
-      "data/dbip-country-lite.mmdb"
+      "data/dbip-country-lite.mmdb",
+      "native-messaging/manifests/chromium.json",
+      "native-messaging/manifests/firefox.json"
     ],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
     "fileAssociations": [
       {
         "ext": ["torrent"],
@@ -62,7 +66,6 @@
     "macOS": {
       "signingIdentity": "-",
       "dmg": {
-        "background": "dmg/background.png",
         "windowSize": {
           "width": 660,
           "height": 400
@@ -80,8 +83,6 @@
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
-        "headerImage": "nsis/header.bmp",
-        "sidebarImage": "nsis/sidebar.bmp",
         "installMode": "both",
         "displayLanguageSelector": true,
         "languages": [
@@ -118,25 +119,22 @@
     },
     "linux": {
       "deb": {
-        "desktopTemplate": "linux/motrix-next.desktop.hbs"
+        "desktopTemplate": "linux/rayburst.desktop.hbs"
       },
       "rpm": {
-        "desktopTemplate": "linux/motrix-next.desktop.hbs"
+        "desktopTemplate": "linux/rayburst.desktop.hbs"
       }
     }
   },
   "plugins": {
     "updater": {
-      "endpoints": ["https://github.com/AnInsomniacy/motrix-next/releases/download/updater/latest.json"],
+      "endpoints": ["https://github.com/AnInsomniacy/rayburst/releases/download/updater/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc2MjEwNDUzQTk3OUM2NDUKUldSRnhubXBVd1FoZHUxeWtoRGJFblZaZ3V3UWZMQTYwL29CQTNySWxQMForTDA2YjN1Mk50Sk4K"
     },
     "deep-link": {
       "desktop": {
-        "schemes": ["magnet", "ed2k", "thunder", "motrixnext"]
+        "schemes": ["magnet", "ed2k", "thunder", "rayburst"]
       }
-    },
-    "sql": {
-      "preload": ["sqlite:history.db"]
     }
   }
 }

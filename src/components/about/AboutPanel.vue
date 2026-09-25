@@ -1,10 +1,11 @@
 <script setup lang="ts">
+const brandLogo = '/logo.svg'
 /** @fileoverview About panel with staggered entrance animations and glass effect. */
-import { ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NModal, NIcon } from 'naive-ui'
 import MTooltip from '@/components/common/MTooltip.vue'
-import { LogoGithub, HeartOutline, DocumentTextOutline, RocketOutline } from '@vicons/ionicons5'
+import { LogoGithub, HeartOutline, GlobeOutline, RocketOutline } from '@vicons/ionicons5'
 import { openUrl as openExternalUrl } from '@tauri-apps/plugin-opener'
 import { getVersion } from '@tauri-apps/api/app'
 import { getVersion as getAria2Version } from '@/api/aria2'
@@ -82,32 +83,32 @@ const techStack = [
   },
 ]
 
-const links = [
+const links = computed(() => [
+  {
+    key: 'website',
+    label: t('about.website'),
+    icon: GlobeOutline,
+    url: 'https://rayburst.pages.dev/',
+  },
   {
     key: 'github',
     label: 'GitHub',
     icon: LogoGithub,
-    url: 'https://github.com/AnInsomniacy/motrix-next',
+    url: 'https://github.com/AnInsomniacy/rayburst',
   },
   {
     key: 'release',
-    i18n: 'about.release',
+    label: t('about.release'),
     icon: RocketOutline,
-    url: 'https://github.com/AnInsomniacy/motrix-next/releases',
-  },
-  {
-    key: 'license',
-    i18n: 'about.license',
-    icon: DocumentTextOutline,
-    url: 'https://github.com/AnInsomniacy/motrix-next/blob/main/LICENSE',
+    url: 'https://github.com/AnInsomniacy/rayburst/releases',
   },
   {
     key: 'support',
-    i18n: 'about.support',
+    label: t('about.support'),
     icon: HeartOutline,
     url: 'https://github.com/AnInsomniacy/AnInsomniacy/blob/main/SPONSOR.md',
   },
-]
+])
 
 async function copyToClipboard(text: string, label: string) {
   try {
@@ -135,7 +136,7 @@ function openUrl(url: string) {
   >
     <div class="about-glass" :class="{ 'about-enter': animate }">
       <!-- Close button -->
-      <button class="about-close" :aria-label="t('about.about')" @click="emit('close')">
+      <button class="about-close" :aria-label="t('app.close')" @click="emit('close')">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
         </svg>
@@ -143,17 +144,17 @@ function openUrl(url: string) {
 
       <!-- Logo -->
       <div class="about-logo stagger stagger-1">
-        <img src="@/assets/logo.png" alt="Motrix Next" width="96" height="96" />
+        <img :src="brandLogo" alt="Rayburst" width="96" height="96" />
       </div>
 
       <!-- Title -->
-      <div class="about-title stagger stagger-2">Motrix <span class="accent">Next</span></div>
+      <div class="about-title stagger stagger-2">Rayburst</div>
 
       <!-- Version Badges (stacked, prominent) -->
       <div class="about-versions stagger stagger-2">
         <MTooltip>
           <template #trigger>
-            <button class="version-badge" @click="copyToClipboard(`Motrix Next v${appVersion}`, 'Motrix Next')">
+            <button class="version-badge" @click="copyToClipboard(`Rayburst v${appVersion}`, 'Rayburst')">
               <span class="version-label">{{ t('about.app-version') }}</span>
               <span class="version-value">v{{ appVersion }}</span>
               <svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -198,11 +199,11 @@ function openUrl(url: string) {
         </Transition>
       </div>
 
-      <!-- Description -->
-      <p class="about-desc stagger stagger-3">{{ t('about.description') }}</p>
+      <!-- Slogan -->
+      <p class="about-desc stagger stagger-3">{{ t('about.tagline') }}</p>
 
       <!-- Tech Stack -->
-      <div class="about-section-label stagger stagger-4">Tech Stack</div>
+      <div class="about-section-label stagger stagger-4">{{ t('about.tech-stack') }}</div>
       <div class="about-tags stagger stagger-4">
         <span v-for="tech in techStack" :key="tech.name" class="about-tag" :style="{ '--tag-color': tech.color }">
           <!-- eslint-disable vue/no-v-html -- tech.svg is static local icon markup -->
@@ -225,21 +226,34 @@ function openUrl(url: string) {
 
       <!-- Links Grid -->
       <div class="about-links stagger stagger-5">
-        <button v-for="link in links" :key="link.key" class="about-link-card" @click="openUrl(link.url)">
-          <NIcon :size="18"><component :is="link.icon" /></NIcon>
-          <span>{{ link.i18n ? t(link.i18n) : link.label }}</span>
-        </button>
+        <a
+          v-for="link in links"
+          :key="link.key"
+          class="about-link-card"
+          :href="link.url"
+          @click.prevent="openUrl(link.url)"
+        >
+          <NIcon :size="18" aria-hidden="true"><component :is="link.icon" /></NIcon>
+          <span>{{ link.label }}</span>
+        </a>
       </div>
 
       <!-- Footer -->
       <div class="about-footer stagger stagger-6">
-        <span>
-          Developed by
-          <a class="about-link" @click="openUrl('https://github.com/AnInsomniacy')">AnInsomniacy</a>
-          · Inspired by
-          <a class="about-link" @click="openUrl('https://github.com/agalwood/Motrix')">Motrix</a>
-        </span>
-        <span>&copy; {{ year }} AnInsomniacy</span>
+        <i18n-t keypath="about.developed-by" tag="span" scope="global">
+          <template #author>
+            <a class="about-link" @click="openUrl('https://github.com/AnInsomniacy')">AnInsomniacy</a>
+          </template>
+        </i18n-t>
+        <div class="about-legal">
+          <span>&copy; {{ year }} AnInsomniacy</span>
+          <a
+            class="about-link"
+            href="https://github.com/AnInsomniacy/rayburst/blob/main/LICENSE"
+            @click.prevent="openUrl('https://github.com/AnInsomniacy/rayburst/blob/main/LICENSE')"
+            >{{ t('about.license') }}</a
+          >
+        </div>
       </div>
     </div>
   </NModal>
@@ -414,6 +428,8 @@ function openUrl(url: string) {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  min-height: 40px;
+  text-decoration: none;
   padding: 10px 0;
   border: 1px solid var(--m3-outline-variant);
   border-radius: 10px;
@@ -428,6 +444,19 @@ function openUrl(url: string) {
   border-color: var(--m3-primary);
   color: var(--m3-primary);
   background: var(--about-card-hover-bg);
+}
+.about-link-card:focus-visible,
+.about-link:focus-visible {
+  outline: 2px solid var(--m3-primary);
+  outline-offset: 3px;
+}
+
+.about-legal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 12px;
 }
 
 /* ── Footer ───────────────────────────────────────────────────────── */

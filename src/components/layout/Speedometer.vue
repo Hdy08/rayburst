@@ -358,9 +358,7 @@ async function handleScheduleToggle(enabled: boolean) {
 /* ── Base: capsule (outer shell receives min-width) ───────────────── */
 .speedometer {
   font-size: 12px;
-  position: fixed;
-  right: 12px;
-  bottom: 12px;
+  position: relative;
   z-index: 20;
   display: flex;
   align-items: center;
@@ -654,5 +652,18 @@ async function handleScheduleToggle(enabled: boolean) {
 .hint-slide-enter-to,
 .hint-slide-leave-from {
   max-height: 40px;
+}
+</style>
+
+<style scoped>
+/* Keep the shared footer usable at the minimum window width. */
+@container footer (max-width: 400px) {
+  .speedometer {
+    max-width: 128px;
+  }
+  .speedometer:not(.idle) .mode,
+  .speedometer:not(.idle) .limit-zone {
+    display: none;
+  }
 }
 </style>

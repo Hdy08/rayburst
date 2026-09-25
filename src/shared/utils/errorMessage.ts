@@ -1,6 +1,8 @@
 /** @fileoverview User-facing error message normalization for unknown thrown values. */
 
 const TAURI_ERROR_LABELS: Record<string, string> = {
+  InvalidInput: 'Invalid input',
+  Conflict: 'Conflict',
   Store: 'Store error',
   Engine: 'Engine error',
   Io: 'IO error',
@@ -9,6 +11,7 @@ const TAURI_ERROR_LABELS: Record<string, string> = {
   Upnp: 'UPnP error',
   Protocol: 'Protocol error',
   Aria2: 'Aria2 Next error',
+  TorrentInspection: 'Torrent inspection error',
   Database: 'Database error',
 }
 
@@ -88,6 +91,19 @@ function normalizeMessage(value: unknown, options: ErrorMessageOptions): string 
     }
     const nested = normalizeMessage(nestedError, options)
     if (nested) return nested
+  }
+
+  if (isRecord(value.Rpc) && typeof value.Rpc.message === 'string') {
+    return `Aria2 Next error [${value.Rpc.code}]: ${value.Rpc.message}`
+  }
+
+  const torrentInspection = value.TorrentInspection
+  if (isRecord(torrentInspection)) {
+    const kind = torrentInspection.kind
+    const message = torrentInspection.message
+    if (typeof kind === 'string' && typeof message === 'string') {
+      return `${TAURI_ERROR_LABELS.TorrentInspection} [${kind}]: ${message}`
+    }
   }
 
   for (const variant of Object.keys(TAURI_ERROR_LABELS) as TauriErrorVariant[]) {

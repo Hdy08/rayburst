@@ -2,11 +2,65 @@
 
 use super::config::RuntimeConfig;
 use super::monitor::{events, TaskEvent};
-use super::notification_i18n::{
-    format_batch_task_message, format_error_message, format_task_message, texts_for_locale,
-};
 use crate::error::AppError;
+use crate::i18n::{
+    bt_complete, download_complete, download_failed, download_start, ed2k_complete,
+    open_file_action, resolve_preferred_locale, show_in_folder_action,
+};
 use tauri::Manager;
+
+pub async fn notify_started_tasks(
+    app: &tauri::AppHandle,
+    engine: &super::tasks::TaskService,
+    tasks: &[crate::aria2::types::Aria2Task],
+) {
+    let mut started = Vec::new();
+    for task in tasks {
+        if matches!(task.status.as_str(), "error" | "removed") {
+            engine.tasks.take_start(&task.gid).await;
+            continue;
+        }
+        if !matches!(task.status.as_str(), "active" | "complete")
+            || super::monitor::is_metadata_task(task)
+            || engine.tasks.is_internal(&task.gid).await
+            || task.bittorrent.as_ref().is_some_and(|bt| {
+                bt.info.is_none()
+                    || bt
+                        .file_selection_state
+                        .as_deref()
+                        .is_some_and(|state| state != "none")
+            })
+            || task.media.as_ref().is_some_and(|media| {
+                !matches!(
+                    media.state.as_str(),
+                    "downloading" | "recording" | "finalizing" | "complete"
+                )
+            })
+        {
+            continue;
+        }
+        if engine.tasks.take_start(&task.gid).await {
+            started.push(TaskStartNotificationTask {
+                name: TaskEvent::from_aria2(task).name,
+                gid: Some(task.gid.clone()),
+            });
+        }
+    }
+    if started.is_empty() {
+        return;
+    }
+    let names = started
+        .iter()
+        .map(|task| task.name.clone())
+        .collect::<Vec<_>>();
+    let config = app
+        .state::<super::config::RuntimeConfigState>()
+        .snapshot()
+        .await;
+    if let Err(error) = send_task_start_notification(app, &names, &started, &config) {
+        log::warn!("notification:start-failed error={error}");
+    }
+}
 
 #[cfg(target_os = "linux")]
 use std::{
@@ -157,7 +211,7 @@ pub struct TaskNotificationContent {
     pub kind: TaskNotificationKind,
     pub title: String,
     pub body: String,
-    pub locale: &'static str,
+    pub locale: String,
     pub click_open_target: Option<TaskNotificationOpenTarget>,
     pub click_show_task_list: bool,
     pub click_open_file_gid: Option<String>,
@@ -190,9 +244,9 @@ enum NotificationDispatchResult {
 #[cfg(target_os = "linux")]
 pub fn linux_notification_identity() -> LinuxNotificationIdentity {
     LinuxNotificationIdentity {
-        app_name: "motrixnext",
-        icon: "motrix-next",
-        desktop_entry: "MotrixNext",
+        app_name: "rayburst",
+        icon: "rayburst",
+        desktop_entry: "Rayburst",
         urgency: notify_rust::Urgency::Normal,
     }
 }
@@ -200,7 +254,7 @@ pub fn linux_notification_identity() -> LinuxNotificationIdentity {
 fn kind_for_event(event_name: &str) -> Option<TaskNotificationKind> {
     match event_name {
         events::TASK_COMPLETE => Some(TaskNotificationKind::Complete),
-        events::SHARING_COMPLETE => Some(TaskNotificationKind::SharingComplete),
+        events::P2P_DOWNLOAD_COMPLETE => Some(TaskNotificationKind::SharingComplete),
         events::TASK_ERROR => Some(TaskNotificationKind::Error),
         _ => None,
     }
@@ -317,51 +371,28 @@ pub fn build_task_notification(
         return None;
     }
 
-    let requested_locale = if config.locale == "auto" {
-        sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string())
-    } else {
-        config.locale.clone()
-    };
-    let locale = super::notification_i18n::resolve_supported_locale(&requested_locale);
-    let texts = texts_for_locale(locale);
+    let locale = resolve_preferred_locale(&config.locale);
     let task_name = event.name.as_str();
 
-    let (title, body) = match kind {
+    let message = match kind {
         TaskNotificationKind::Start => return None,
-        TaskNotificationKind::Complete => (
-            texts.download_complete_title.to_string(),
-            format_task_message(texts.download_complete_body, task_name),
-        ),
+        TaskNotificationKind::Complete => download_complete(&locale, task_name),
         TaskNotificationKind::SharingComplete => {
             if event.sharing_kind == Some("ed2k") {
-                (
-                    texts.ed2k_complete_title.to_string(),
-                    format_task_message(texts.ed2k_complete_body, task_name),
-                )
+                ed2k_complete(&locale, task_name)
             } else {
-                (
-                    texts.bt_complete_title.to_string(),
-                    format_task_message(texts.bt_complete_body, task_name),
-                )
+                bt_complete(&locale, task_name)
             }
         }
         TaskNotificationKind::Error => {
-            let reason = event
-                .error_message
-                .as_deref()
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or(texts.error_unknown);
-            (
-                texts.download_failed_title.to_string(),
-                format_error_message(texts.download_failed_body, task_name, reason),
-            )
+            download_failed(&locale, task_name, event.error_message.as_deref())
         }
     };
 
     Some(TaskNotificationContent {
         kind,
-        title,
-        body,
+        title: message.title,
+        body: message.body,
         locale,
         click_open_target: None,
         click_show_task_list: false,
@@ -394,27 +425,13 @@ pub fn build_task_start_notification(
         .filter(|name| !name.is_empty())
         .collect::<Vec<_>>();
     let first_name = task_names.first()?;
-    let requested_locale = if config.locale == "auto" {
-        sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string())
-    } else {
-        config.locale.clone()
-    };
-    let locale = super::notification_i18n::resolve_supported_locale(&requested_locale);
-    let texts = texts_for_locale(locale);
-    let body = if task_names.len() == 1 {
-        format_task_message(texts.download_start_body, first_name)
-    } else {
-        format_batch_task_message(
-            texts.download_batch_start_body,
-            first_name,
-            task_names.len() - 1,
-        )
-    };
+    let locale = resolve_preferred_locale(&config.locale);
+    let message = download_start(&locale, first_name, task_names.len() - 1);
 
     Some(TaskNotificationContent {
         kind: TaskNotificationKind::Start,
-        title: texts.download_start_title.to_string(),
-        body,
+        title: message.title,
+        body: message.body,
         locale,
         click_open_target: None,
         click_show_task_list: config.open_task_list_on_start_notification_click,
@@ -570,7 +587,7 @@ pub fn send_app_notification(
         kind: TaskNotificationKind::Start,
         title: title.to_string(),
         body: body.to_string(),
-        locale: "frontend",
+        locale: "frontend".to_string(),
         click_open_target: None,
         click_show_task_list: false,
         click_open_file_gid: None,
@@ -704,13 +721,12 @@ fn send_platform_notification(
         .summary(&content.title)
         .body(&content.body);
 
-    let texts = texts_for_locale(content.locale);
     notification.action("default", "Open");
     if content.click_open_file_gid.is_some() {
-        notification.action("open-file", texts.open_file_action);
+        notification.action("open-file", &open_file_action(&content.locale));
     }
     if content.click_show_in_folder_gid.is_some() {
-        notification.action("show-in-folder", texts.show_in_folder_action);
+        notification.action("show-in-folder", &show_in_folder_action(&content.locale));
     }
 
     let handle = notification.show().map_err(|error| error.to_string())?;
@@ -905,13 +921,12 @@ fn build_windows_toast_xml(
         })
         .unwrap_or_default();
 
-    let texts = texts_for_locale(content.locale);
     let mut actions = String::new();
     if let Some(gid) = content.click_open_file_gid.as_deref() {
         if let Some(url) = windows_task_action_url(WINDOWS_NOTIFICATION_OPEN_FILE_ACTION, gid) {
             actions.push_str(&format!(
                 r#"<action content="{}" arguments="{}" activationType="{activation_type}"/>"#,
-                escape_windows_toast_xml(texts.open_file_action),
+                escape_windows_toast_xml(&open_file_action(&content.locale)),
                 escape_windows_toast_xml(&url)
             ));
         }
@@ -921,7 +936,7 @@ fn build_windows_toast_xml(
         {
             actions.push_str(&format!(
                 r#"<action content="{}" arguments="{}" activationType="{activation_type}"/>"#,
-                escape_windows_toast_xml(texts.show_in_folder_action),
+                escape_windows_toast_xml(&show_in_folder_action(&content.locale)),
                 escape_windows_toast_xml(&url)
             ));
         }
@@ -947,16 +962,13 @@ fn windows_notification_activation_url(
     action_secret: Option<&str>,
 ) -> Option<String> {
     if let Some(target) = content.click_open_target.as_ref() {
-        windows_open_folder_activation_url(target, action_secret).or_else(|| {
-            Some(format!(
-                "motrixnext://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}"
-            ))
-        })
+        windows_open_folder_activation_url(target, action_secret)
+            .or_else(|| Some(format!("rayburst://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}")))
     } else {
         Some(if content.click_show_task_list {
             windows_show_task_list_activation_url()
         } else {
-            format!("motrixnext://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}")
+            format!("rayburst://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}")
         })
     }
 }
@@ -972,12 +984,10 @@ fn windows_open_folder_activation_url(
     }
 
     let Some(action_secret) = action_secret else {
-        return Some(format!(
-            "motrixnext://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}"
-        ));
+        return Some(format!("rayburst://{WINDOWS_NOTIFICATION_ACTIVATE_ACTION}"));
     };
     let signature = sign_notification_open_dir(action_secret, dir)?;
-    let mut url = url::Url::parse("motrixnext://open-folder").ok()?;
+    let mut url = url::Url::parse("rayburst://open-folder").ok()?;
     {
         let mut query = url.query_pairs_mut();
         query.append_pair("dir", dir);
@@ -988,7 +998,7 @@ fn windows_open_folder_activation_url(
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_show_task_list_activation_url() -> String {
-    format!("motrixnext://{WINDOWS_NOTIFICATION_SHOW_TASK_LIST_ACTION}")
+    format!("rayburst://{WINDOWS_NOTIFICATION_SHOW_TASK_LIST_ACTION}")
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1159,7 +1169,7 @@ fn windows_task_action_url(action: &str, gid: &str) -> Option<String> {
         return None;
     }
     let mut url = url::Url::parse(&format!(
-        "motrixnext://{WINDOWS_NOTIFICATION_TASK_ACTION_ROUTE}"
+        "rayburst://{WINDOWS_NOTIFICATION_TASK_ACTION_ROUTE}"
     ))
     .ok()?;
     url.path_segments_mut().ok()?.push(action).push(gid);
@@ -1182,6 +1192,7 @@ mod tests {
 
     fn event() -> TaskEvent {
         TaskEvent {
+            media: None,
             gid: "g1".to_string(),
             name: "file.zip".to_string(),
             status: "complete".to_string(),
@@ -1192,13 +1203,17 @@ mod tests {
             completed_length: "1".to_string(),
             info_hash: None,
             magnet_link: None,
+            sharing_time: None,
             ed2k_link: None,
+            ed2k_hash: None,
             is_bt: false,
             is_ed2k: false,
             sharing_kind: None,
             #[cfg(any(target_os = "windows", test))]
             following: None,
             files: vec![crate::services::monitor::TaskEventFile {
+                index: "1".to_string(),
+                completed_length: "1".to_string(),
                 path: "/tmp/file.zip".to_string(),
                 length: "1".to_string(),
                 selected: "true".to_string(),
@@ -1224,7 +1239,7 @@ mod tests {
         let mut ev = event();
         ev.is_bt = true;
         ev.sharing_kind = Some("bt");
-        let content = build_task_notification(events::SHARING_COMPLETE, &ev, &cfg()).unwrap();
+        let content = build_task_notification(events::P2P_DOWNLOAD_COMPLETE, &ev, &cfg()).unwrap();
         assert_eq!(content.kind, TaskNotificationKind::SharingComplete);
         assert_eq!(content.title, "BT Download Complete");
         assert_eq!(content.body, "Seeding: file.zip");
@@ -1237,7 +1252,7 @@ mod tests {
         let mut ev = event();
         ev.is_ed2k = true;
         ev.sharing_kind = Some("ed2k");
-        let content = build_task_notification(events::SHARING_COMPLETE, &ev, &cfg()).unwrap();
+        let content = build_task_notification(events::P2P_DOWNLOAD_COMPLETE, &ev, &cfg()).unwrap();
         assert_eq!(content.kind, TaskNotificationKind::SharingComplete);
         assert_eq!(content.title, "ED2K Download Complete");
         assert_eq!(content.body, "Sharing: file.zip");
@@ -1251,7 +1266,7 @@ mod tests {
         let mut config = cfg();
         config.locale = "zh-CN".to_string();
 
-        let content = build_task_notification(events::SHARING_COMPLETE, &ev, &config).unwrap();
+        let content = build_task_notification(events::P2P_DOWNLOAD_COMPLETE, &ev, &config).unwrap();
 
         assert_eq!(content.kind, TaskNotificationKind::SharingComplete);
         assert_eq!(content.title, "ED2K 下载完成");
@@ -1417,7 +1432,7 @@ mod tests {
             kind: TaskNotificationKind::Complete,
             title: "A&B <done>".to_string(),
             body: "Saved: \"it's here\"".to_string(),
-            locale: "en-US",
+            locale: "en-US".to_string(),
             click_open_target: Some(TaskNotificationOpenTarget {
                 dir: "C:\\Downloads".to_string(),
             }),
@@ -1429,7 +1444,7 @@ mod tests {
         let xml = build_windows_toast_xml(&content, Some("test-secret"), false);
 
         assert!(xml.contains(r#"activationType="protocol""#));
-        assert!(xml.contains(r#"launch="motrixnext://open-folder?dir=C%3A%5CDownloads&amp;sig="#));
+        assert!(xml.contains(r#"launch="rayburst://open-folder?dir=C%3A%5CDownloads&amp;sig="#));
         assert!(xml.contains("A&amp;B &lt;done&gt;"));
         assert!(xml.contains("Saved: &quot;it&apos;s here&quot;"));
     }
@@ -1440,7 +1455,7 @@ mod tests {
             kind: TaskNotificationKind::Complete,
             title: "Download Complete".to_string(),
             body: "Saved: file.zip".to_string(),
-            locale: "en-US",
+            locale: "en-US".to_string(),
             click_open_target: Some(TaskNotificationOpenTarget {
                 dir: "C:\\Downloads".to_string(),
             }),
@@ -1451,7 +1466,7 @@ mod tests {
 
         let xml = build_windows_toast_xml(&content, None, true);
 
-        assert!(xml.contains(r#"launch="motrixnext://activate""#));
+        assert!(xml.contains(r#"launch="rayburst://activate""#));
     }
 
     #[test]
@@ -1460,7 +1475,7 @@ mod tests {
             kind: TaskNotificationKind::Start,
             title: "Download Started".to_string(),
             body: "Downloading: file.zip".to_string(),
-            locale: "en-US",
+            locale: "en-US".to_string(),
             click_open_target: None,
             click_show_task_list: true,
             click_open_file_gid: None,
@@ -1470,7 +1485,7 @@ mod tests {
         let xml = build_windows_toast_xml(&content, None, true);
 
         assert!(xml.contains(r#"activationType="foreground""#));
-        assert!(xml.contains(r#"launch="motrixnext://show-task-list""#));
+        assert!(xml.contains(r#"launch="rayburst://show-task-list""#));
     }
 
     #[test]
@@ -1479,7 +1494,7 @@ mod tests {
             kind: TaskNotificationKind::Complete,
             title: "Download Complete".to_string(),
             body: "Saved: file.zip".to_string(),
-            locale: "en-US",
+            locale: "en-US".to_string(),
             click_open_target: None,
             click_show_task_list: false,
             click_open_file_gid: Some("0123456789abcdef".to_string()),
@@ -1488,12 +1503,12 @@ mod tests {
 
         let xml = build_windows_toast_xml(&content, None, true);
 
-        assert!(xml.contains(r#"launch="motrixnext://activate""#));
-        assert!(!xml.contains("motrixnext://open-folder"));
+        assert!(xml.contains(r#"launch="rayburst://activate""#));
+        assert!(!xml.contains("rayburst://open-folder"));
         assert!(xml.contains(r#"content="Open File""#));
         assert!(xml.contains(r#"content="Show in Folder""#));
-        assert!(xml.contains("motrixnext://task-action/open-file/0123456789abcdef"));
-        assert!(xml.contains("motrixnext://task-action/show-in-folder/0123456789abcdef"));
+        assert!(xml.contains("rayburst://task-action/open-file/0123456789abcdef"));
+        assert!(xml.contains("rayburst://task-action/show-in-folder/0123456789abcdef"));
         assert_eq!(xml.matches(r#"activationType="foreground""#).count(), 3);
         assert!(!xml.contains(r#"activationType="protocol""#));
     }
@@ -1504,7 +1519,7 @@ mod tests {
             kind: TaskNotificationKind::Complete,
             title: "下载完成".to_string(),
             body: "已保存：file.zip".to_string(),
-            locale: "zh-CN",
+            locale: "zh-CN".to_string(),
             click_open_target: None,
             click_show_task_list: false,
             click_open_file_gid: Some("g1".to_string()),

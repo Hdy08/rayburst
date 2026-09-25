@@ -91,6 +91,7 @@ pub enum FrontendActionKind {
     ReleaseNotes,
     #[cfg(target_os = "macos")]
     ReportIssue,
+    ShowDownloads,
     ShowTaskList,
     OpenTaskFile,
     ShowTaskInFolder,
@@ -110,6 +111,7 @@ impl FrontendActionKind {
             Self::ReleaseNotes => "release-notes",
             #[cfg(target_os = "macos")]
             Self::ReportIssue => "report-issue",
+            Self::ShowDownloads => "show-downloads",
             Self::ShowTaskList => "show-task-list",
             Self::OpenTaskFile => "open-file",
             Self::ShowTaskInFolder => "show-in-folder",

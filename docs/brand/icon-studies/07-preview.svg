@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="560" viewBox="0 0 760 560"><rect width="760" height="560" fill="#FAFAFC"/><g transform="translate(140 10) scale(.94)"><defs>
+    <linearGradient id="body" x1="80%" y1="0%" x2="20%" y2="100%">
+      <stop offset="0" stop-color="#882A96"/><stop offset=".55" stop-color="#660874"/><stop offset="1" stop-color="#540660"/>
+    </linearGradient>
+    <linearGradient id="facet" x1="80%" y1="0%" x2="20%" y2="100%">
+      <stop offset="0" stop-color="#B36DBD"/><stop offset="1" stop-color="#843191"/>
+    </linearGradient>
+    <linearGradient id="ray" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0" stop-color="#A254AF"/><stop offset="1" stop-color="#741682"/>
+    </linearGradient>
+  </defs>
+<path d="M 77 362 L 109 371 L 125 402 L 387 402 L 403 371 L 435 362 L 408 437 L 104 437 Z" fill="#660874"/>
+<path d="M 77 362 L 109 371 L 125 402 L 104 437 Z M 403 371 L 435 362 L 408 437 L 387 402 Z" fill="url(#ray)"/>
+<g transform="matrix(.75 0 .34 .85 51 8)"><polygon points="110.00,286.00 175.00,271.00 91.00,332.00" fill="url(#ray)" />
+<polygon points="111.96,54.83 166.91,148.75 91.00,332.00" fill="url(#ray)" />
+<polygon points="436.80,44.00 335.36,222.28 451.87,218.64 150.00,400.00 174.00,420.00 61.00,467.00 72.00,357.00 93.00,376.00 252.68,273.69 142.60,290.71 213.94,155.23" fill="url(#body)" />
+<polygon points="436.80,44.00 213.94,155.23 142.60,290.71 192.69,282.97" fill="url(#facet)" /></g>
+</g></svg>

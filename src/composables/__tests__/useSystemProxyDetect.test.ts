@@ -33,6 +33,7 @@ function makeProxyInfo(overrides: Partial<SystemProxyInfo> = {}): SystemProxyInf
   return {
     server: 'http://127.0.0.1:7890',
     bypass: '*.local',
+    unsupportedBypass: [],
     isSocks: false,
     ...overrides,
   }

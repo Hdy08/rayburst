@@ -1,28 +1,28 @@
 <script setup lang="ts">
 /** @fileoverview Advanced preference tab: RPC, extension, clipboard, default programs, engine, log, history, diagnostics. */
-import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { usePlatform } from '@/composables/usePlatform'
 import { useI18n } from 'vue-i18n'
 import { usePreferenceStore } from '@/stores/preference'
 import { usePreferenceForm } from '@/composables/usePreferenceForm'
-import { useEngineRestart } from '@/composables/useEngineRestart'
-import { useTaskStore } from '@/stores/task'
+import { usePreferenceNumericValidation } from '@/composables/usePreferenceNumericValidation'
+import { useEngineStore } from '@/stores/engine'
 import { useHistoryStore } from '@/stores/history'
 import { useAdvancedActions } from '@/composables/useAdvancedActions'
-import { useProtocolHandlers, type ProtocolKey } from '@/composables/useProtocolHandlers'
+import { useEngineRestart } from '@/composables/useEngineRestart'
+import PreferenceAssociations from './PreferenceAssociations.vue'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { appDataDir, appLogDir, join, tempDir } from '@tauri-apps/api/path'
 import { APP_LOG_LEVELS, ARIA2_LOG_LEVELS } from '@shared/constants'
 import {
-  generateSecret,
   buildAdvancedForm,
   buildAdvancedSystemConfig,
   transformAdvancedForStore,
-  validateAdvancedForm,
   randomRpcPort,
 } from '@/composables/useAdvancedPreference'
+import { generateConfigSecret } from '@shared/utils/configHydration'
 import {
   NForm,
   NFormItem,
@@ -53,36 +53,32 @@ import {
   CopyOutline,
 } from '@vicons/ionicons5'
 import { logger } from '@shared/logger'
-import PreferenceActionBar from './PreferenceActionBar.vue'
+import PreferenceActionRegistration from './PreferenceActionRegistration.vue'
 import PreferenceCheckboxGrid from './PreferenceCheckboxGrid.vue'
 import PreferenceHintLabel from './PreferenceHintLabel.vue'
 
+const engineStore = useEngineStore()
 const { restartEngine } = useEngineRestart()
 
 const { t } = useI18n()
 const preferenceStore = usePreferenceStore()
-const taskStore = useTaskStore()
 const historyStore = useHistoryStore()
 const message = useAppMessage()
+const { constraint, configFieldProps, areConfigFieldsValid } = usePreferenceNumericValidation()
 const dialog = useDialog()
-const protocolHandlers = useProtocolHandlers()
-const protocolStatus = protocolHandlers.status
-const protocolPending = protocolHandlers.pending
-
 const { isLinux } = usePlatform()
 
-import { ENGINE_RPC_PORT } from '@shared/constants'
 import { diffConfig, checkIsNeedRestart } from '@shared/utils/config'
 import { writeAppClipboardText } from '@shared/utils'
 
 const appLogLevelOptions = APP_LOG_LEVELS.map((level) => ({ label: level, value: level }))
 const aria2LogLevelOptions = ARIA2_LOG_LEVELS.map((level) => ({ label: level, value: level }))
 
-type ClipboardType = 'http' | 'ftp' | 'magnet' | 'ed2k' | 'thunder' | 'btHash'
-const clipboardTypes: ClipboardType[] = ['http', 'ftp', 'magnet', 'ed2k', 'thunder', 'btHash']
+type ClipboardType = 'http' | 'sftp' | 'magnet' | 'ed2k' | 'thunder' | 'btHash'
+const clipboardTypes: ClipboardType[] = ['http', 'sftp', 'magnet', 'ed2k', 'thunder', 'btHash']
 const clipboardTypeOptions = computed(() => [
   { label: t('preferences.clipboard-http'), value: 'http' },
-  { label: t('preferences.clipboard-ftp'), value: 'ftp' },
+  { label: t('preferences.clipboard-sftp'), value: 'sftp' },
   { label: t('preferences.clipboard-magnet'), value: 'magnet' },
   { label: t('preferences.clipboard-ed2k'), value: 'ed2k' },
   { label: t('preferences.clipboard-thunder'), value: 'thunder' },
@@ -90,7 +86,7 @@ const clipboardTypeOptions = computed(() => [
 ])
 const clipboardFieldByType: Record<ClipboardType, keyof typeof form.value> = {
   http: 'clipboardHttp',
-  ftp: 'clipboardFtp',
+  sftp: 'clipboardSftp',
   magnet: 'clipboardMagnet',
   ed2k: 'clipboardEd2k',
   thunder: 'clipboardThunder',
@@ -107,7 +103,7 @@ const selectedClipboardTypes = computed<string[]>({
 })
 
 const aria2ConfPath = ref('')
-const sessionPath = ref('')
+const engineStatePath = ref('')
 const logPath = ref('')
 const defaultTempPath = ref('')
 
@@ -116,11 +112,6 @@ const { form, isDirty, handleSave, handleReset, resetSnapshot } = usePreferenceF
   buildSystemConfig: buildAdvancedSystemConfig,
   transformForStore: transformAdvancedForStore,
   beforeSave: async (f) => {
-    const error = validateAdvancedForm(f)
-    if (error) {
-      message.error(t(error))
-      return false
-    }
     // Only warn when user actively clears the secret (non-empty → empty).
     // If it was already empty before this edit session, no need to re-warn.
     const prevSecret = preferenceStore.config.rpcSecret
@@ -146,15 +137,21 @@ const { form, isDirty, handleSave, handleReset, resetSnapshot } = usePreferenceF
     const changed = diffConfig(preferenceStore.config, f)
     if (checkIsNeedRestart(changed)) {
       const ok = await new Promise<boolean>((resolve) => {
+        let accepted = false
         dialog.info({
           title: t('preferences.engine-restart-title'),
           content: t('preferences.engine-restart-confirm'),
           positiveText: t('preferences.engine-restart-now'),
           negativeText: t('app.cancel'),
           maskClosable: false,
-          onPositiveClick: () => resolve(true),
+          onPositiveClick: () => {
+            accepted = true
+          },
           onNegativeClick: () => resolve(false),
           onClose: () => resolve(false),
+          onAfterLeave: () => {
+            if (accepted) resolve(true)
+          },
         })
       })
       if (!ok) return false
@@ -186,28 +183,21 @@ const { form, isDirty, handleSave, handleReset, resetSnapshot } = usePreferenceF
 
     // Engine restart — user already confirmed in beforeSave, execute immediately.
     if (checkIsNeedRestart(changed)) {
-      const port = f.rpcListenPort || ENGINE_RPC_PORT
-      const secret = f.rpcSecret || ''
-      message.info(t('preferences.engine-restarting'))
-      await nextTick()
-      await new Promise((r) => requestAnimationFrame(r))
-      await restartEngine({ port, secret })
+      restartEngine('settingsChange')
     }
 
-    // Motrix log level changes need a full app relaunch,
-    // because tauri-plugin-log is configured at process startup.
     if (changed.logLevel !== undefined && changed.logLevel !== prevConfig.logLevel) {
-      dialog.info({
-        title: t('preferences.restart-required'),
-        content: t('preferences.log-level-restart-confirm'),
-        positiveText: t('preferences.restart-now'),
-        negativeText: t('preferences.engine-restart-later'),
-        maskClosable: false,
-        onPositiveClick: async () => {
-          await invoke('stop_engine_command')
-          await relaunch()
-        },
-      })
+      await invoke('set_app_log_level', { level: f.logLevel })
+    }
+
+    if (changed.aria2LogLevel !== undefined && changed.aria2LogLevel !== prevConfig.aria2LogLevel) {
+      try {
+        await invoke('aria2_change_global_option', {
+          options: { 'log-level': f.aria2LogLevel },
+        })
+      } catch (error) {
+        if (engineStore.isReady) throw error
+      }
     }
 
     // WebKitGTK rendering variables are read at process startup.
@@ -219,7 +209,7 @@ const { form, isDirty, handleSave, handleReset, resetSnapshot } = usePreferenceF
         negativeText: t('preferences.engine-restart-later'),
         maskClosable: false,
         onPositiveClick: async () => {
-          await invoke('stop_engine_command')
+          await engineStore.stop('appRelaunch')
           await relaunch()
         },
       })
@@ -242,17 +232,19 @@ const { form, isDirty, handleSave, handleReset, resetSnapshot } = usePreferenceF
     }
   },
 })
+const numericFieldsValid = computed(() =>
+  areConfigFieldsValid({
+    extensionApiPort: form.value.extensionApiPort,
+    rpcListenPort: form.value.rpcListenPort,
+  }),
+)
 
 function buildForm() {
-  return buildAdvancedForm(preferenceStore.config).form
+  return buildAdvancedForm(preferenceStore.config)
 }
 
 function loadForm() {
   Object.assign(form.value, buildForm())
-}
-
-async function handleProtocolToggle(protocol: ProtocolKey, enabled: boolean) {
-  await protocolHandlers.setProtocolEnabled(protocol, enabled)
 }
 
 async function loadPaths() {
@@ -264,13 +256,13 @@ async function loadPaths() {
   }
   try {
     const dataDir = await appDataDir()
-    sessionPath.value = await join(dataDir, 'download.session')
+    engineStatePath.value = await join(dataDir, 'engine', 'state')
   } catch (e) {
     logger.debug('Advanced.loadPaths', e)
   }
   try {
     const logDir = await appLogDir()
-    logPath.value = await join(logDir, 'motrix-next.log')
+    logPath.value = await join(logDir, 'rayburst.log')
   } catch (e) {
     logger.debug('Advanced.loadLogPath', e)
   }
@@ -286,11 +278,11 @@ function onRpcPortDice() {
 }
 
 function onRpcSecretDice() {
-  form.value.rpcSecret = generateSecret()
+  form.value.rpcSecret = generateConfigSecret()
 }
 
 function onApiSecretDice() {
-  form.value.extensionApiSecret = generateSecret()
+  form.value.extensionApiSecret = generateConfigSecret()
 }
 
 async function copyToClipboard(text: string, label: string) {
@@ -324,8 +316,7 @@ const {
   exportingLogs,
   exportingSettings,
   importingSettings,
-  handleManualRestart: handleManualRestartAction,
-  handleSessionReset,
+  handleEngineStateReset,
   handleRestoreDefaults,
   handleFactoryReset,
   handleDbIntegrityCheck,
@@ -340,7 +331,6 @@ const {
 } = useAdvancedActions({
   t,
   message,
-  taskStore,
   historyStore,
   preferenceStore,
   form,
@@ -348,33 +338,10 @@ const {
   resetSnapshot,
 })
 
-function handleManualRestart() {
-  handleManualRestartAction(form.value.rpcListenPort as number, form.value.rpcSecret as string)
-}
-
 onMounted(async () => {
   loadForm()
   resetSnapshot()
   loadPaths()
-
-  try {
-    await protocolHandlers.refreshAll()
-  } catch (e) {
-    logger.debug('Advanced.protocolCheck', e)
-  }
-})
-
-watch(protocolHandlers.lastError, (error) => {
-  if (!error) return
-  logger.warn(
-    'Advanced.protocol',
-    `Failed to ${error.enabled ? 'register' : 'unregister'} ${error.protocol}: ${error.reason}`,
-  )
-  if (!error.enabled && error.reason.includes('manual_change_required')) {
-    message.warning(t('preferences.protocol-unregister-manual-required'))
-  } else {
-    message.error(t('preferences.protocol-failed', { protocol: error.protocol, reason: error.reason }))
-  }
 })
 </script>
 
@@ -390,18 +357,17 @@ watch(protocolHandlers.lastError, (error) => {
           <NFormItem :label="t('preferences.silent-auto-submit-from-extension')">
             <NSwitch v-model:value="form.silentAutoSubmitFromExtension" />
           </NFormItem>
-          <NFormItem>
-            <template #label>
-              <PreferenceHintLabel
-                :label="t('preferences.auto-select-all-bt-files-from-extension')"
-                :hint="t('preferences.auto-select-all-bt-files-from-extension-hint')"
-              />
-            </template>
-            <NSwitch v-model:value="form.autoSelectAllBtFilesFromExtension" />
-          </NFormItem>
         </NCollapseTransition>
-        <NFormItem :label="t('preferences.extension-api-port')">
-          <NInputNumber v-model:value="form.extensionApiPort" :min="1024" :max="65535" class="pref-port" />
+        <NFormItem
+          :label="t('preferences.extension-api-port')"
+          v-bind="configFieldProps('extensionApiPort', form.extensionApiPort)"
+        >
+          <NInputNumber
+            v-model:value="form.extensionApiPort"
+            :min="constraint('extensionApiPort').min"
+            :max="constraint('extensionApiPort').max"
+            class="pref-port"
+          />
         </NFormItem>
         <NFormItem :validation-status="form.extensionApiSecret ? undefined : 'warning'">
           <template #label>
@@ -436,9 +402,17 @@ watch(protocolHandlers.lastError, (error) => {
         </NFormItem>
 
         <NDivider title-placement="left">{{ t('preferences.rpc') }}</NDivider>
-        <NFormItem :label="t('preferences.rpc-listen-port')">
+        <NFormItem
+          :label="t('preferences.rpc-listen-port')"
+          v-bind="configFieldProps('rpcListenPort', form.rpcListenPort)"
+        >
           <NInputGroup>
-            <NInputNumber v-model:value="form.rpcListenPort" :min="1024" :max="65535" class="pref-port" />
+            <NInputNumber
+              v-model:value="form.rpcListenPort"
+              :min="constraint('rpcListenPort').min"
+              :max="constraint('rpcListenPort').max"
+              class="pref-port"
+            />
             <NButton
               class="pref-icon-button"
               @click="copyToClipboard(String(form.rpcListenPort), t('preferences.rpc-listen-port'))"
@@ -522,15 +496,18 @@ watch(protocolHandlers.lastError, (error) => {
             </NButton>
           </NInputGroup>
         </NFormItem>
-        <NFormItem :label="t('preferences.session-path')">
+        <NFormItem :label="t('preferences.engine-state-path')">
           <NInputGroup>
-            <NInput :value="sessionPath" readonly class="pref-control-full" />
-            <NButton class="pref-icon-button" @click="copyToClipboard(sessionPath, t('preferences.session-path'))">
+            <NInput :value="engineStatePath" readonly class="pref-control-full" />
+            <NButton
+              class="pref-icon-button"
+              @click="copyToClipboard(engineStatePath, t('preferences.engine-state-path'))"
+            >
               <template #icon>
                 <NIcon :size="14"><CopyOutline /></NIcon>
               </template>
             </NButton>
-            <NButton class="pref-icon-button" @click="handleRevealPath(sessionPath)">
+            <NButton class="pref-icon-button" @click="handleRevealPath(engineStatePath)">
               <template #icon>
                 <NIcon :size="14"><FolderOpenOutline /></NIcon>
               </template>
@@ -538,8 +515,8 @@ watch(protocolHandlers.lastError, (error) => {
           </NInputGroup>
         </NFormItem>
         <NFormItem label=" ">
-          <NButton type="error" ghost @click="handleSessionReset">
-            {{ t('preferences.clear-all-tasks') }}
+          <NButton type="error" ghost @click="handleEngineStateReset">
+            {{ t('preferences.reset-engine-state') }}
           </NButton>
         </NFormItem>
 
@@ -562,7 +539,7 @@ watch(protocolHandlers.lastError, (error) => {
         <NFormItem :label="t('preferences.log-level')">
           <div class="log-level-row">
             <div class="log-level-control">
-              <span class="log-level-control__label">{{ t('preferences.motrix-next') }}</span>
+              <span class="log-level-control__label">{{ t('preferences.rayburst') }}</span>
               <NSelect
                 v-model:value="form.logLevel"
                 :options="appLogLevelOptions"
@@ -672,36 +649,7 @@ watch(protocolHandlers.lastError, (error) => {
           </NFormItem>
         </NCollapseTransition>
 
-        <!-- Default Programs (migrated from Basic) -->
-        <NDivider title-placement="left">{{ t('preferences.default-programs') }}</NDivider>
-        <NFormItem :label="t('preferences.protocol-magnet')">
-          <NSwitch
-            :value="protocolStatus.magnet"
-            :loading="protocolPending === 'magnet'"
-            @update:value="(value) => handleProtocolToggle('magnet', value)"
-          />
-        </NFormItem>
-        <NFormItem :label="t('preferences.protocol-ed2k')">
-          <NSwitch
-            :value="protocolStatus.ed2k"
-            :loading="protocolPending === 'ed2k'"
-            @update:value="(value) => handleProtocolToggle('ed2k', value)"
-          />
-        </NFormItem>
-        <NFormItem :label="t('preferences.protocol-thunder')">
-          <NSwitch
-            :value="protocolStatus.thunder"
-            :loading="protocolPending === 'thunder'"
-            @update:value="(value) => handleProtocolToggle('thunder', value)"
-          />
-        </NFormItem>
-        <NFormItem :label="t('preferences.protocol-motrixnext')">
-          <NSwitch
-            :value="protocolStatus.motrixnext"
-            :loading="protocolPending === 'motrixnext'"
-            @update:value="(value) => handleProtocolToggle('motrixnext', value)"
-          />
-        </NFormItem>
+        <PreferenceAssociations />
       </NForm>
     </div>
 
@@ -732,7 +680,12 @@ watch(protocolHandlers.lastError, (error) => {
         </NDataTable>
       </NCard>
     </NModal>
-    <PreferenceActionBar :is-dirty="isDirty" @save="handleSave" @discard="handleReset" @restart="handleManualRestart" />
+    <PreferenceActionRegistration
+      :is-dirty="isDirty"
+      :is-valid="numericFieldsValid"
+      @save="handleSave"
+      @discard="handleReset"
+    />
   </div>
 </template>
 

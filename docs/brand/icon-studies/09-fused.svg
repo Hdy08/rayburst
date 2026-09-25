@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Rayburst</title>
+  <defs>
+    <linearGradient id="bolt" x1="380" y1="62" x2="207" y2="399" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8F329D"/><stop offset=".54" stop-color="#660874"/><stop offset="1" stop-color="#560660"/>
+    </linearGradient>
+    <linearGradient id="facet" x1="385" y1="58" x2="183" y2="304" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B66CC0"/><stop offset="1" stop-color="#8B3498"/>
+    </linearGradient>
+    <linearGradient id="wing" x1="116" y1="99" x2="206" y2="401" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#AB5AB6"/><stop offset="1" stop-color="#741482"/>
+    </linearGradient>
+    <linearGradient id="landing" x1="399" y1="303" x2="201" y2="415" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#AD60B8"/><stop offset="1" stop-color="#7D208B"/>
+    </linearGradient>
+  </defs>
+  <path d="M 120 96 L 170 166 L 153 297 L 181 282 L 197 362 L 139 326 Z" fill="url(#wing)"/>
+  <path d="M 78 367 L 206 400 L 406 310 L 438 361 L 235 437 L 110 416 Z" fill="url(#landing)"/>
+  <path d="M 78 367 L 110 416 L 235 437 L 206 400 Z" fill="#660874"/>
+  <path d="M 206 400 L 438 361 L 409 404 L 235 437 Z" fill="#741482"/>
+  <path d="M 391 61 L 285 222 L 404 212 L 269 333 L 291 342 L 206 400 L 216 305 L 234 322 L 270 278 L 176 291 L 232 166 Z" fill="url(#bolt)"/>
+  <path d="M 391 61 L 232 166 L 176 291 L 215 283 Z" fill="url(#facet)"/>
+</svg>

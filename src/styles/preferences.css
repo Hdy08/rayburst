@@ -21,22 +21,12 @@
   max-width: none;
   box-sizing: border-box;
   flex: none;
-  padding: 16px 30px 64px 36px;
+  padding: 16px var(--content-gutter);
 }
 
-.form-preference .n-form-item {
+.form-preference .n-form-item,
+.form-preference .pref-section-note {
   padding-left: 50px;
-}
-
-.form-preference .n-divider.n-divider--title-position-left .n-divider__line--left {
-  width: 28px;
-  flex: 0 0 28px;
-}
-
-.form-preference .n-divider.n-divider--title-position-left .n-divider__line--right {
-  width: auto;
-  min-width: 0;
-  flex: 1 1 auto;
 }
 
 .form-preference .collapse-indent {
@@ -73,6 +63,10 @@
   width: fit-content;
   min-width: 160px;
   max-width: 100%;
+}
+
+.pref-action-button--compact {
+  min-width: fit-content;
 }
 
 .pref-icon-button {

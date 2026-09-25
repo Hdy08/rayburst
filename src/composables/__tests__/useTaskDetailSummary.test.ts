@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Aria2Task } from '@shared/types'
 import {
   buildBtHealthSummary,
+  buildMediaDetailRows,
   buildEd2kDetailSummary,
   buildTaskDetailKind,
   buildTaskTransferSummary,
@@ -43,7 +44,7 @@ describe('buildTaskDetailKind', () => {
     expect(buildTaskDetailKind(makeTask({ ed2k: { hash: 'abcd' } }))).toBe('ed2k')
   })
 
-  it('classifies HTTP, FTP, Thunder-decoded, and other URI tasks as uri when no protocol metadata exists', () => {
+  it('classifies HTTP, SFTP, Thunder-decoded, and other URI tasks as uri when no protocol metadata exists', () => {
     expect(buildTaskDetailKind(makeTask())).toBe('uri')
   })
 })
@@ -112,6 +113,16 @@ describe('buildBtHealthSummary', () => {
             downloadSpeed: '20',
             uploadSpeed: '0',
             seeder: 'false',
+            state: 'connected',
+            transport: 'tcp',
+            encryption: 'plain',
+            sources: ['tracker'],
+            progress: '0.500000',
+            flags: 'D',
+            incoming: 'false',
+            downloaded: '20',
+            uploaded: '0',
+            completedLength: '50',
           },
           {
             peerId: '-TR3000-abcdefghijkl',
@@ -123,6 +134,16 @@ describe('buildBtHealthSummary', () => {
             downloadSpeed: '0',
             uploadSpeed: '10',
             seeder: 'true',
+            state: 'connected',
+            transport: 'utp',
+            encryption: 'rc4',
+            sources: ['dht'],
+            progress: '1.000000',
+            flags: 'U',
+            incoming: 'true',
+            downloaded: '0',
+            uploaded: '10',
+            completedLength: '100',
           },
         ],
         files: [
@@ -148,7 +169,6 @@ describe('buildBtHealthSummary', () => {
 
     expect(summary.metadataState).toBe('ready')
     expect(summary.trackerCount).toBe(2)
-    expect(summary.unprobeableTrackerCount).toBe(1)
     expect(summary.peerCount).toBe(2)
     expect(summary.activeDownloadPeerCount).toBe(1)
     expect(summary.activeUploadPeerCount).toBe(1)
@@ -161,6 +181,7 @@ describe('buildBtHealthSummary', () => {
       makeTask({
         bittorrent: {
           announceList: [],
+          state: 'downloadingMetadata',
         },
       }),
     )
@@ -227,5 +248,47 @@ describe('buildTaskTransferSummary', () => {
     expect(uri.showUploadMetrics).toBe(false)
     expect(uri.showSeeders).toBe(false)
     expect(uri.ratio).toBe(0)
+  })
+})
+
+describe('media overview integration', () => {
+  const media = {
+    state: 'downloading' as const,
+    protocol: 'hls' as const,
+    live: 'false' as const,
+    duration: '60000',
+    completedDuration: '10000',
+    downloadedLength: '1024',
+    lengthKnown: 'false' as const,
+    error: '',
+    tracks: [
+      {
+        id: '0:0',
+        type: 'video' as const,
+        language: '',
+        codec: 'avc1',
+        width: '640',
+        height: '360',
+        bandwidth: '1000000',
+        selected: 'true' as const,
+      },
+    ],
+  }
+  it('does not repeat status, protocol or zero-value diagnostics before selection', () => {
+    expect(buildMediaDetailRows(makeTask({ media: { ...media, state: 'awaiting-selection' } }), 'en-US')).toEqual([])
+  })
+  it('adds only media-specific rows to the existing overview', () => {
+    const rows = buildMediaDetailRows(makeTask({ media }), 'en-US')
+    expect(rows.map((row) => row.key)).toEqual(['video', 'duration', 'speed', 'received'])
+    expect(rows.find((row) => row.key === 'duration')?.value).toBe('00:00:10 / 00:01:00')
+    expect(rows.find((row) => row.key === 'video')?.value).toContain('640×360')
+  })
+  it('shows recorded duration without a fake total for paused live media', () => {
+    const rows = buildMediaDetailRows(
+      makeTask({ status: 'paused', media: { ...media, state: 'paused', live: 'true' } }),
+      'en-US',
+    )
+    expect(rows.find((row) => row.key === 'duration')?.value).toBe('00:00:10')
+    expect(rows.some((row) => row.key === 'speed')).toBe(false)
   })
 })

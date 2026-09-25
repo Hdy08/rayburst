@@ -1,7 +1,6 @@
 /** @fileoverview Tests for config utilities. */
 import { describe, it, expect } from 'vitest'
 import {
-  changeKeysCase,
   changeKeysToCamelCase,
   changeKeysToKebabCase,
   diffConfig,
@@ -41,12 +40,6 @@ describe('changeKeysToKebabCase', () => {
   })
 })
 
-describe('changeKeysCase', () => {
-  it('returns empty when converter is not a function', () => {
-    expect(changeKeysCase({ a: 1 }, null as unknown as (s: string) => string)).toEqual({})
-  })
-})
-
 describe('diffConfig', () => {
   it('returns only changed keys', () => {
     const result = diffConfig({ a: 1, b: 2 }, { a: 1, b: 3 })
@@ -56,7 +49,7 @@ describe('diffConfig', () => {
     const result = diffConfig({ a: 1 }, { a: 1 })
     expect(result).toEqual({})
   })
-  it('diffs arrays via JSON.stringify', () => {
+  it('detects changed array values', () => {
     const result = diffConfig({ tags: ['a', 'b'] }, { tags: ['a', 'c'] })
     expect(result).toEqual({ tags: ['a', 'c'] })
   })
@@ -64,17 +57,9 @@ describe('diffConfig', () => {
     const result = diffConfig({ tags: ['a', 'b'] }, { tags: ['a', 'b'] })
     expect(result).toEqual({})
   })
-  it('diffs nested objects via JSON.stringify', () => {
+  it('detects changed nested values', () => {
     const result = diffConfig({ proxy: { host: 'a' } }, { proxy: { host: 'b' } })
     expect(result).toEqual({ proxy: { host: 'b' } })
-  })
-
-  it('treats coerce-equal primitives as unchanged (string "29120" vs number 29120)', () => {
-    const result = diffConfig(
-      { listenPort: '29120', dhtListenPort: '29130' },
-      { listenPort: 29120, dhtListenPort: 29130 },
-    )
-    expect(result).toEqual({})
   })
 
   it('still detects genuinely different values across types', () => {
@@ -93,20 +78,16 @@ describe('checkIsNeedRestart', () => {
   it('returns true for rpcSecret', () => {
     expect(checkIsNeedRestart({ rpcSecret: 'new-secret-value' })).toBe(true)
   })
-  it('returns true for listenPort (BT)', () => {
-    expect(checkIsNeedRestart({ listenPort: 21302 })).toBe(true)
+  it('returns false for the hot-reloadable BitTorrent listen port', () => {
+    expect(checkIsNeedRestart({ listenPort: 21302 })).toBe(false)
   })
-  it('returns true for dhtListenPort', () => {
-    expect(checkIsNeedRestart({ dhtListenPort: 26702 })).toBe(true)
-  })
-  it('returns true for BT discovery and encryption session keys', () => {
-    expect(checkIsNeedRestart({ btDhtIpv4Enabled: false })).toBe(true)
-    expect(checkIsNeedRestart({ btDhtIpv6Enabled: false })).toBe(true)
-    expect(checkIsNeedRestart({ btPeerExchangeEnabled: false })).toBe(true)
-    expect(checkIsNeedRestart({ btLocalPeerDiscoveryEnabled: false })).toBe(true)
-    expect(checkIsNeedRestart({ btForceEncryption: true })).toBe(true)
-    expect(checkIsNeedRestart({ btMaxPeers: 256 })).toBe(true)
-    expect(checkIsNeedRestart({ aria2LogLevel: 'info' })).toBe(true)
+  it('keeps native BitTorrent settings hot-reloadable', () => {
+    expect(checkIsNeedRestart({ btDhtEnabled: false })).toBe(false)
+    expect(checkIsNeedRestart({ btPeerExchangeEnabled: false })).toBe(false)
+    expect(checkIsNeedRestart({ btLocalPeerDiscoveryEnabled: false })).toBe(false)
+    expect(checkIsNeedRestart({ btEncryption: 'required' })).toBe(false)
+    expect(checkIsNeedRestart({ btMaxPeers: 256 })).toBe(false)
+    expect(checkIsNeedRestart({ aria2LogLevel: 'info' })).toBe(false)
   })
   it('returns true for ED2K restart keys from AppConfig camelCase fields', () => {
     expect(checkIsNeedRestart({ ed2kListenPort: 4663 })).toBe(true)
@@ -118,16 +99,6 @@ describe('checkIsNeedRestart', () => {
   })
   it('detects restart key among multiple changes', () => {
     expect(checkIsNeedRestart({ theme: 'dark', rpcSecret: 'changed' })).toBe(true)
-  })
-
-  it('returns false when port values are same but types differ (real afterSave scenario)', () => {
-    // Simulates the real bug: prevConfig stores ports as strings,
-    // form uses numbers, but the actual values are identical.
-    const changed = diffConfig(
-      { listenPort: '29120', dhtListenPort: '29130', rpcListenPort: 29100, rpcSecret: 'abc' },
-      { listenPort: 29120, dhtListenPort: 29130, rpcListenPort: 29100, rpcSecret: 'abc' },
-    )
-    expect(checkIsNeedRestart(changed)).toBe(false)
   })
 })
 
@@ -176,31 +147,41 @@ describe('filterHotReloadableKeys', () => {
   it('passes through hot-reloadable keys unchanged', () => {
     const config = {
       'max-concurrent-downloads': '10',
-      'max-connection-per-server': '16',
+      'stream-max-connections': '16',
       'max-overall-download-limit': '0',
-      'async-dns': 'false',
       dir: '/downloads',
     }
     expect(filterHotReloadableKeys(config)).toEqual(config)
   })
 
-  it('strips restart-required keys (ports + secret)', () => {
+  it('keeps the live BitTorrent endpoint and strips restart-only ports and secrets', () => {
     const config = {
       'rpc-listen-port': '29100',
       'allow-remote-access': 'false',
       'rpc-secret': 'abc',
       'listen-port': '29120',
-      'dht-listen-port': '29130',
+      'bt-external-ip': '203.0.113.7',
+      'bt-external-port': '62000',
       'ed2k-listen-port': '29140',
       'ed2k-udp-listen-port': '29150',
       'enable-dht': 'true',
       'enable-peer-exchange': 'true',
       'bt-enable-lpd': 'true',
-      'bt-force-encryption': 'false',
-      'bt-require-crypto': 'false',
+      'bt-encryption': 'enabled',
+      'bt-port-mapping': 'true',
       'bt-max-peers': '128',
     }
-    expect(filterHotReloadableKeys(config)).toEqual({})
+    expect(filterHotReloadableKeys(config)).toEqual({
+      'listen-port': '29120',
+      'bt-external-ip': '203.0.113.7',
+      'bt-external-port': '62000',
+      'enable-dht': 'true',
+      'enable-peer-exchange': 'true',
+      'bt-enable-lpd': 'true',
+      'bt-encryption': 'enabled',
+      'bt-port-mapping': 'true',
+      'bt-max-peers': '128',
+    })
   })
 
   it('strips aria2 changeGlobalOption exclusions', () => {
@@ -210,7 +191,6 @@ describe('filterHotReloadableKeys', () => {
       out: 'output.zip',
       pause: 'true',
       'select-file': '1-3',
-      'rpc-save-upload-metadata': 'true',
     }
     expect(filterHotReloadableKeys(config)).toEqual({})
   })
@@ -238,12 +218,12 @@ describe('filterHotReloadableKeys', () => {
       'rpc-listen-port': '29100',
       'bt-tracker': 'udp://t.example.org:6969',
       'rpc-secret': 'secret',
-      'user-agent': 'Motrix/3.4.1',
+      'user-agent': 'Rayburst/3.4.1',
     }
     expect(filterHotReloadableKeys(config)).toEqual({
       'max-concurrent-downloads': '8',
       'bt-tracker': 'udp://t.example.org:6969',
-      'user-agent': 'Motrix/3.4.1',
+      'user-agent': 'Rayburst/3.4.1',
     })
   })
 })

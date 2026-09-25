@@ -22,11 +22,15 @@ vi.mock('@shared/logger', () => ({
   },
 }))
 
-vi.mock('naive-ui', () => ({
-  NProgress: { template: '<div class="progress-stub" />' },
-  NIcon: { template: '<span><slot /></span>' },
-  NTooltip: { template: '<span><slot name="trigger" /><slot /></span>' },
-}))
+vi.mock('naive-ui', async (importOriginal) => {
+  const { NEllipsis } = await importOriginal<typeof import('naive-ui')>()
+  return {
+    NEllipsis,
+    NProgress: { template: '<div class="progress-stub" />' },
+    NIcon: { template: '<span><slot /></span>' },
+    NTooltip: { template: '<span><slot name="trigger" /><slot /></span>' },
+  }
+})
 
 vi.mock('@vicons/ionicons5', () => ({
   ArrowUpOutline: { template: '<i />' },
@@ -47,6 +51,9 @@ vi.mock('../TaskItemActions.vue', () => ({
 }))
 
 import TaskItem from '../TaskItem.vue'
+import TaskCompactItem from '../TaskCompactItem.vue'
+import { updateTaskFileStates } from '@/composables/useTaskFileMissing'
+import { nextTick } from 'vue'
 
 function createTask(path: string): Aria2Task {
   return {
@@ -84,65 +91,55 @@ function createTask(path: string): Aria2Task {
 }
 
 describe('TaskItem', () => {
+  it.each([TaskItem, TaskCompactItem])('transitions semantic text changes, not progress updates', async (component) => {
+    const task = createTask('/downloads/file.bin')
+    const wrapper = mount(component, { props: { task } })
+    const surface = wrapper.element
+    const name = wrapper.findAll('.task-text-transition-content')[0].element
+    const status = wrapper.findAll('.task-text-transition-content')[1].element
+    await wrapper.setProps({ task: { ...task, completedLength: '50' } })
+    expect(wrapper.findAll('.task-text-transition-content')[0].element).toBe(name)
+    expect(wrapper.findAll('.task-text-transition-content')[1].element).toBe(status)
+    await wrapper.setProps({
+      task: { ...task, status: 'active', bittorrent: { state: 'seeding', info: { name: 'renamed.zip' } } },
+    })
+    expect(wrapper.findAll('.task-text-transition-content')[0].element).not.toBe(name)
+    expect(wrapper.findAll('.task-text-transition-content')[1].element).not.toBe(status)
+    expect(wrapper.element).toBe(surface)
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
-    invokeMock.mockResolvedValue(true)
+    invokeMock.mockResolvedValue({ 'gid-1': 'available' })
+    updateTaskFileStates({})
   })
 
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('refreshes file existence when the selected target path changes', async () => {
-    const wrapper = mount(TaskItem, {
-      props: {
-        task: createTask('/downloads/first.bin'),
-      },
-    })
-
-    await vi.advanceTimersByTimeAsync(200)
-    expect(invokeMock).toHaveBeenLastCalledWith('check_path_exists', {
-      path: '/downloads/first.bin',
-    })
-
-    invokeMock.mockClear()
-
-    await wrapper.setProps({
-      task: createTask('/downloads/second.bin'),
-    })
-    await vi.advanceTimersByTimeAsync(200)
-
-    expect(invokeMock).toHaveBeenCalledTimes(1)
-    expect(invokeMock).toHaveBeenCalledWith('check_path_exists', {
-      path: '/downloads/second.bin',
-    })
-  })
-
-  it('coalesces rapid target path changes into a single file check for the latest path', async () => {
-    const wrapper = mount(TaskItem, {
-      props: {
-        task: createTask('/downloads/first.bin'),
-      },
-    })
-
-    await vi.advanceTimersByTimeAsync(200)
-    invokeMock.mockClear()
-
-    await wrapper.setProps({
-      task: createTask('/downloads/second.bin'),
-    })
-    await vi.advanceTimersByTimeAsync(50)
-    await wrapper.setProps({
-      task: createTask('/downloads/third.bin'),
-    })
-    await vi.advanceTimersByTimeAsync(200)
-
-    expect(invokeMock).toHaveBeenCalledTimes(1)
-    expect(invokeMock).toHaveBeenCalledWith('check_path_exists', {
-      path: '/downloads/third.bin',
-    })
-  })
+  it.each([TaskItem, TaskCompactItem])(
+    'uses native availability and blocks opening missing content',
+    async (component) => {
+      const wrapper = mount(component, { props: { task: createTask('/downloads/file.bin') } })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(invokeMock).toHaveBeenCalledWith('task_file_states', { gids: ['gid-1'] })
+      updateTaskFileStates({ 'gid-1': 'missing' })
+      await nextTick()
+      expect(wrapper.text()).toContain('task.file-missing')
+      await wrapper.trigger('dblclick')
+      expect(wrapper.emitted('open-file')).toBeUndefined()
+      updateTaskFileStates({ 'gid-1': 'available' })
+      await nextTick()
+      await wrapper.trigger('dblclick')
+      expect(wrapper.emitted('open-file')).toHaveLength(1)
+      await wrapper.get('.task-drag-handle').trigger('dblclick')
+      expect(wrapper.emitted('open-file')).toHaveLength(1)
+      wrapper.unmount()
+    },
+  )
 
   it('shows queued status for waiting tasks', () => {
     const task = {
@@ -159,6 +156,64 @@ describe('TaskItem', () => {
     })
 
     expect(wrapper.text()).toContain('task.status-waiting')
+  })
+
+  it('shows progress percentage in full and compact cards', () => {
+    const task = {
+      ...createTask('/downloads/active.bin'),
+      status: 'active',
+      completedLength: '25',
+      totalLength: '100',
+    } satisfies Aria2Task
+
+    const full = mount(TaskItem, { props: { task } })
+    const compact = mount(TaskCompactItem, { props: { task } })
+
+    expect(full.find('.progress-left').text()).toContain('25%')
+    expect(compact.get('.compact-percent').text()).toBe('25%')
+  })
+
+  it('keeps compact progress mounted while transfer metadata changes', async () => {
+    const task = {
+      ...createTask('/downloads/active.bin'),
+      status: 'active',
+      totalLength: '104857600',
+      completedLength: '1048576',
+      downloadSpeed: '1048576',
+      bittorrent: undefined,
+    } satisfies Aria2Task
+    const wrapper = mount(TaskCompactItem, { props: { task } })
+    const progress = wrapper.get('.compact-progress').element
+    const surface = wrapper.get('.task-compact-item').element
+    // Layout styles must survive the real ellipsis/tooltip rendering boundary.
+    for (const scope of surface.getAttributeNames().filter((name) => name.startsWith('data-v-'))) {
+      expect(wrapper.get('.compact-meta').element.hasAttribute(scope)).toBe(true)
+    }
+
+    expect(wrapper.get('.compact-meta').text()).toContain('1.00 MB / 100.00 MB')
+    expect(wrapper.findAll('.compact-speed')).toHaveLength(1)
+    expect(wrapper.get('.compact-percent').element.previousElementSibling).toBe(progress)
+    expect(wrapper.get('.compact-meta').text()).not.toContain('%')
+
+    await wrapper.setProps({
+      task: {
+        ...task,
+        completedLength: '104857600',
+        downloadSpeed: '0',
+        uploadSpeed: '10485760',
+        seeder: 'true',
+        bittorrent: { state: 'seeding', info: { name: 'archive.zip' } },
+      },
+    })
+
+    expect(wrapper.get('.compact-progress').element).toBe(progress)
+    expect(wrapper.get('.compact-progress').attributes('percentage')).toBe('100')
+    expect(wrapper.get('.compact-percent').text()).toBe('100%')
+    expect(wrapper.get('.compact-meta').text()).toContain('100.00 MB / 100.00 MB')
+    expect(wrapper.get('.compact-status').text()).toBe('task.seeding')
+    expect(wrapper.findAll('.compact-speed')).toHaveLength(2)
+    expect(wrapper.get('.compact-meta').text()).toContain('10.0 MB/s')
+    wrapper.unmount()
   })
 
   it('does not show a status tag for paused tasks', () => {
@@ -205,7 +260,7 @@ describe('TaskItem', () => {
       totalLength: '0',
       completedLength: '0',
       files: [],
-      bittorrent: {},
+      bittorrent: { state: 'downloadingMetadata' },
     } satisfies Aria2Task
 
     const wrapper = mount(TaskItem, {
@@ -215,5 +270,40 @@ describe('TaskItem', () => {
     })
 
     expect(wrapper.text().match(/task\.bt-metadata-fetching/g)).toHaveLength(1)
+    expect(wrapper.find('.progress-left').classes()).toContain('info-hidden')
+  })
+
+  it('keeps the full card surface non-interactive', async () => {
+    const wrapper = mount(TaskItem, {
+      props: {
+        task: { ...createTask('/downloads/active.bin'), status: 'active' },
+      },
+    })
+
+    await wrapper.trigger('pointerdown')
+    await wrapper.trigger('click')
+    await wrapper.trigger('dblclick')
+
+    expect(wrapper.classes()).not.toContain('pressed')
+    expect(wrapper.emitted('pause')).toBeUndefined()
+    expect(wrapper.emitted('resume')).toBeUndefined()
+    expect(wrapper.emitted('open-file')).toBeUndefined()
+  })
+
+  it('opens completed content from the compact card', async () => {
+    const wrapper = mount(TaskCompactItem, {
+      props: {
+        task: createTask('/downloads/complete.bin'),
+      },
+    })
+
+    await wrapper.trigger('pointerdown')
+    await wrapper.trigger('click')
+    await wrapper.trigger('dblclick')
+
+    expect(wrapper.classes()).not.toContain('pressed')
+    expect(wrapper.emitted('pause')).toBeUndefined()
+    expect(wrapper.emitted('resume')).toBeUndefined()
+    expect(wrapper.emitted('open-file')).toHaveLength(1)
   })
 })

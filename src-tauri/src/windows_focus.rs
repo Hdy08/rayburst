@@ -118,14 +118,22 @@ pub fn confirm_foreground_focus(hwnd: HWND, source: &str) -> bool {
 /// for all retries. Never fall back to an unrelated folder.
 pub fn focus_file_manager_window_for_dir(dir: &Path, source: &str) -> bool {
     let key = normalized_path_key(dir);
-    let result = (|| {
-        let _com = crate::windows_toast::Apartment::new()?;
-        focus_file_manager_on_sta(&key, source)
-    })();
+    let result = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _com = crate::windows_toast::Apartment::new()?;
+                focus_file_manager_on_sta(&key, source)
+            })
+            .join()
+    });
     match result {
-        Ok(focused) => focused,
-        Err(error) => {
+        Ok(Ok(focused)) => focused,
+        Ok(Err(error)) => {
             log::warn!("windows-focus:explorer-failed source={source} error={error}");
+            false
+        }
+        Err(_) => {
+            log::warn!("windows-focus:explorer-thread-panicked source={source}");
             false
         }
     }

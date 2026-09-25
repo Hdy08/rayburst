@@ -1,20 +1,14 @@
-# Code Signing Policy
+# Code signing
 
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+Rayburst keeps the existing Tauri updater signing key. The public key is checked in
+under `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. Private material stays
+in `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository
+secrets. Rebranding does not require key rotation.
 
-## Team Roles
+Release builds enable updater signatures through `src-tauri/tauri.release.json`.
+Local builds do not require a signing key unless that release configuration is used.
 
-- **Committers and reviewers:** [AnInsomniacy](https://github.com/AnInsomniacy)
-- **Approvers:** [AnInsomniacy](https://github.com/AnInsomniacy)
-
-## Signing Scope
-
-Only artifacts built from this repository's official CI pipeline ([GitHub Actions](https://github.com/AnInsomniacy/motrix-next/actions)) are submitted for signing. We do not sign third-party binaries.
-
-## Upstream Dependencies
-
-The bundled [Aria2 Next](https://github.com/AnInsomniacy/aria2-next) sidecar binary is a maintained aria2-compatible engine built by the project maintainer using public GitHub Actions workflows.
-
-## Privacy Policy
-
-See [PRIVACY.md](PRIVACY.md).
+Tauri updater signatures verify downloaded update packages. Windows Authenticode
+signing is a separate, opt-in SignPath operation. It uses the existing `SIGNPATH_*`
+configuration and signs the final installers before their updater signatures and
+channel manifests are published. See [Release configuration](RELEASING.md).
