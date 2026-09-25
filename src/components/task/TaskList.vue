@@ -274,7 +274,7 @@ function handleCardBeforeLeave(element: Element) {
         class="task-list-inner"
         @before-leave="handleCardBeforeLeave"
       >
-        <div v-for="item in visibleTaskList" :key="item.gid" class="task-list-item">
+        <div v-for="item in visibleTaskList" :key="item.gid" class="task-list-item" :style="taskListStyle">
           <component
             :is="taskCardComponent"
             :task="item"

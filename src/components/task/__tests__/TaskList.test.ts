@@ -103,6 +103,20 @@ describe('TaskList', () => {
     expect(wrapper.find('.compact-task-item').exists()).toBe(false)
   })
 
+  it('applies card opacity variables directly to draggable items', async () => {
+    const wrapper = mount(TaskList, { global: { plugins: [pinia] } })
+    const taskStore = useTaskStore()
+    const preferenceStore = usePreferenceStore()
+    preferenceStore.updatePreference({ taskCardOpacity: 62 })
+    taskStore.taskList = [createTask()]
+
+    await wrapper.vm.$nextTick()
+
+    const draggableItem = wrapper.get('.task-list-item').element as HTMLElement
+    expect(draggableItem.style.getPropertyValue('--task-card-opacity-percent')).toBe('62%')
+    wrapper.unmount()
+  })
+
   it('renders compact task cards when taskCardMode is compact', async () => {
     const wrapper = mount(TaskList, {
       global: {
